@@ -1,0 +1,13 @@
+[package]
+name = "apt-sources-repos"
+version = "0.1.0"
+authors = ["Michael Aaron Murphy <mmstickman@gmail.com>"]
+description = "Library for fetching apt repo files from apt repos"
+license = "MIT"
+readme = "README"
+
+[dependencies]
+apt-sources-lists = { git = "https://github.com/pop-os/apt-sources-lists" }
+futures = "0.1.25"
+reqwest = "0.9.4"
+tokio = "0.1.11"
