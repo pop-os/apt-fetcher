@@ -2,14 +2,19 @@
 name = "apt-sources-repos"
 version = "0.1.0"
 authors = ["Michael Aaron Murphy <mmstickman@gmail.com>"]
-description = "Library for fetching apt repo files from apt repos"
+description = "Library for fetching dist and pool files from apt repos"
 license = "MIT"
 readme = "README"
 
 [dependencies]
-apt-sources-lists = { git = "https://github.com/pop-os/apt-sources-lists" }
+# apt-sources-lists = { git = "https://github.com/pop-os/apt-sources-lists" }
+apt-sources-lists = { path = "../apt-sources-lists" }
 futures = "0.1.25"
 reqwest = "0.9.4"
 tokio = "0.1.11"
 failure = "0.1.3"
 failure_derive = "0.1.3"
+
+[dev-dependencies]
+reqwest = "0.9.4"
+clap = "2.32.0"
