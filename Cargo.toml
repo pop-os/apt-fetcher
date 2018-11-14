@@ -1,5 +1,5 @@
 [package]
-name = "apt-sources-repos"
+name = "apt-fetcher"
 version = "0.1.0"
 authors = ["Michael Aaron Murphy <mmstickman@gmail.com>"]
 description = "Library for fetching dist and pool files from apt repos"
@@ -7,14 +7,22 @@ license = "MIT"
 readme = "README"
 
 [dependencies]
-# apt-sources-lists = { git = "https://github.com/pop-os/apt-sources-lists" }
-apt-sources-lists = { path = "../apt-sources-lists" }
+deb-architectures = { git = "https://github.com/pop-os/deb-architectures" }
+deb-release-file = { git = "https://github.com/pop-os/deb-release-file" }
+apt-sources-lists = { git = "https://github.com/pop-os/apt-sources-lists" }
 futures = "0.1.25"
-reqwest = "0.9.4"
+reqwest = "0.9.5"
 tokio = "0.1.11"
 failure = "0.1.3"
 failure_derive = "0.1.3"
+tempfile = "3.0.4"
+gpgrv = { git = "https://github.com/FauxFaux/gpgrv" }
+xz2 = "0.1.6"
+libflate = "0.1.18"
+lz4 = "1.23.0"
+tempfile-fast = "0.2.3"
 
 [dev-dependencies]
 reqwest = "0.9.4"
 clap = "2.32.0"
+log = "0.4.6"

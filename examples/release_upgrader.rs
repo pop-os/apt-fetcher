@@ -2,12 +2,44 @@ extern crate apt_sources_repos;
 #[macro_use]
 extern crate clap;
 extern crate reqwest;
+extern crate log;
+
+use log::{Record, Level, Metadata};
+
+struct SimpleLogger;
+
+impl log::Log for SimpleLogger {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        metadata.level() <= Level::Trace
+    }
+
+    fn log(&self, record: &Record) {
+        if self.enabled(record.metadata()) {
+            println!("{} - {}", record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+use log::{SetLoggerError, LevelFilter};
+
+static LOGGER: SimpleLogger = SimpleLogger;
+
+pub fn init() -> Result<(), SetLoggerError> {
+    // log::set_logger(&LOGGER)
+    //     .map(|()| log::set_max_level(LevelFilter::Trace))?;
+
+    Ok(())
+}
 
 use apt_sources_repos::*;
 use reqwest::async::Client;
 use std::process::exit;
+use std::sync::{Arc, Mutex};
 
 pub fn main() {
+    init().unwrap();
     let matches = clap_app! {
         release_upgrade =>
             (@arg from: +required "upgrade from this suite")
@@ -19,10 +51,15 @@ pub fn main() {
     let to = matches.value_of("to").unwrap();
     let core_packages = matches.values_of("core").unwrap();
 
-    let mut sources = SourcesList::scan().unwrap();
-    let client = Client::new();
+    let sources = Arc::new(Mutex::new(SourcesList::scan().unwrap()));
+    let client = Arc::new(Client::new());
+    let keyring = Arc::new(AptKeyring::new().unwrap());
 
-    match UpgradeRequest::new(&client, &mut sources).send(from, to) {
+    let request = UpgradeRequest::new(client, sources)
+        .keyring(keyring)
+        .send(from, to);
+
+    match request {
         Ok(upgrader) => {
             println!("Upgrading from {} to {}", from, to);
 
