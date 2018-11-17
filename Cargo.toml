@@ -7,6 +7,7 @@ license = "MIT"
 readme = "README"
 
 [dependencies]
+apt-keyring = { git = "https://github.com/pop-os/apt-keyring" }
 deb-architectures = { git = "https://github.com/pop-os/deb-architectures" }
 deb-release-file = { git = "https://github.com/pop-os/deb-release-file" }
 apt-sources-lists = { git = "https://github.com/pop-os/apt-sources-lists" }
@@ -16,7 +17,7 @@ tokio = "0.1.11"
 failure = "0.1.3"
 failure_derive = "0.1.3"
 tempfile = "3.0.4"
-gpgrv = { git = "https://github.com/FauxFaux/gpgrv" }
+gpgrv = "0.1.1"
 xz2 = "0.1.6"
 libflate = "0.1.18"
 lz4 = "1.23.0"

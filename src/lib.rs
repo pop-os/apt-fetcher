@@ -1,3 +1,4 @@
+extern crate apt_keyring as keyring;
 extern crate deb_architectures;
 extern crate deb_release_file;
 extern crate apt_sources_lists;
@@ -15,10 +16,8 @@ extern crate xz2;
 
 mod decompressor;
 mod dist;
-mod keyring;
 mod status;
 mod upgrade;
 
 pub use self::dist::*;
-pub use self::keyring::*;
 pub use self::upgrade::*;

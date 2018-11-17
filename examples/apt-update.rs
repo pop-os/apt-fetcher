@@ -1,10 +1,12 @@
-extern crate apt_sources_repos;
+extern crate apt_fetcher;
+extern crate apt_keyring;
 #[macro_use]
 extern crate clap;
 extern crate reqwest;
 extern crate log;
 
-use apt_sources_repos::*;
+use apt_fetcher::*;
+use apt_keyring::AptKeyring;
 use reqwest::async::Client;
 use std::process::exit;
 use log::{Record, Level, Metadata};

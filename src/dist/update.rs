@@ -4,7 +4,7 @@ use apt_sources_lists::*;
 use decompressor::{Compression, Decompressor};
 use keyring::AptKeyring;
 use futures::{Future, Stream};
-use gpgrv::verify_clearsign_armour;
+use gpgrv::{Keyring, verify_clearsign_armour};
 use reqwest::async::{Client, Decoder, Response};
 use std::io::{self, Error as TokioIoError, Seek, SeekFrom, Write};
 use std::process::Command;
@@ -73,6 +73,7 @@ impl<'a> Updater<'a> {
             .map_err(|why| DistUpdateError::AptUpdate { why })
     }
 
+    /// Experimental apt update replacement.
     pub fn tokio_update(&self) -> Result<(), DistUpdateError> {
         let architectures = supported_architectures()
             .map(Arc::new)
@@ -145,8 +146,8 @@ fn fetch_entries(
     entries.into_iter()
         // Pick the best option to fetch, favoring xz over gz.
         .map(|entries| {
-            entries.iter().find(|entry| entry.path.ends_with(".xz"))
-                .or_else(|| entries.iter().find(|entry| entry.path.ends_with(".gz")))
+            entries.iter().find(|entry| entry.path.ends_with(".gz"))
+                .or_else(|| entries.iter().find(|entry| entry.path.ends_with(".xz")))
                 .or_else(|| entries.last())
                 .expect("no entries found for this release")
                 .clone()
@@ -183,14 +184,15 @@ fn fetch_entries(
                 // TODO: Check whether we need to download it or not.
                 .and_then(|resp| decode_to_vec(resp.into_body()))
                 // TODO: Validate that the file fetched has the correct checksum and size.
-                .and_then(move |c| {
-                    Decompressor::from_variant(io::Cursor::new(c), compression)
+                .and_then(move |decoded| {
+                    Decompressor::from_variant(io::Cursor::new(decoded), compression)
                         .map_err(|why| DistUpdateError::Decompressor { why })
                 })
                 .map(move |mut decompressor| {
                     let path = entry.path.clone();
                     let mut file = PersistableTempFile::new_in(PARTIAL).unwrap();
                     io::copy(&mut decompressor, &mut file).unwrap();
+                    file.seek(SeekFrom::Start(0)).unwrap();
                     eprintln!("{} was fetched and decompressed", path);
                     (url, path, file)
                 })
@@ -208,19 +210,18 @@ fn fetch_release_files(
     paths.into_iter()
         // TODO: filter release files that have already been fetched.
         .map(move |entry| {
-            let release_file = fetch_release_file(&client, keyring.clone(), entry.dist_path());
-
-            release_file.and_then(|(url, release_file)| {
-                String::from_utf8(release_file)
-                    .map_err(|_| DistUpdateError::InvalidUtf8)
-                    .and_then(|string| {
-                        string.parse::<DistRelease>()
-                            .map_err(|why| DistUpdateError::InvalidReleaseData { why })
-                            .map(|r| (Arc::new(url), Arc::new(string), r))
-                    })
+            fetch_release_file(&client, keyring.clone(), entry.dist_path())
+                .and_then(|(url, release_file)| {
+                    String::from_utf8(release_file)
+                        .map_err(|_| DistUpdateError::InvalidUtf8)
+                        .and_then(|string| {
+                            string.parse::<DistRelease>()
+                                .map_err(|why| DistUpdateError::InvalidReleaseData { why })
+                                .map(|r| (Arc::new(url), Arc::new(string), r))
+                        })
+                })
             })
-        })
-}
+    }
 
 /// Construct an iterator of futures for fetching each dist release file.
 ///
@@ -321,7 +322,9 @@ fn validate_gpg_signature<I>(
     input
         .and_then(move |decoded| {
             let mut output = io::Cursor::new(Vec::new());
-            verify_clearsign_armour(&mut io::Cursor::new(decoded), &mut output, &keyring)
+            let keyring: &AptKeyring = keyring.as_ref();
+            let keyring: &Keyring = keyring.as_ref();
+            verify_clearsign_armour(&mut io::Cursor::new(decoded), &mut output, keyring)
                 .map_err(|why| DistUpdateError::GpgValidation { why })?;
 
             Ok(output.into_inner())
