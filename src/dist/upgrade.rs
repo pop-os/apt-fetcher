@@ -1,10 +1,10 @@
 use apt_sources_lists::*;
 use dist::{REQUIRED_DIST_FILES, update::{Updater, DistUpdateError}};
-use futures::Future;
+use futures::{self, Future};
 use keyring::AptKeyring;
-use reqwest::async::{Client, Response};
+use reqwest::{self, async::{Client, Response}};
 use std::io;
-use tokio::runtime::Runtime;
+use tokio::{self, runtime::Runtime};
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Fail)]

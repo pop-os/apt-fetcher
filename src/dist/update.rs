@@ -1,26 +1,27 @@
+use async_fetcher::{AsyncFetcher, FetchError};
 use deb_architectures::{Architecture, supported_architectures};
 use deb_release_file::{DistRelease, ReleaseEntry, ReleaseVariant};
 use apt_sources_lists::*;
 use decompressor::{Compression, Decompressor};
 use keyring::AptKeyring;
-use futures::{Future, Stream};
+use filetime;
+use futures::{self, Future, Stream};
 use gpgrv::{Keyring, verify_clearsign_armour};
-use reqwest::async::{Client, Decoder, Response};
-use std::io::{self, Error as TokioIoError, Seek, SeekFrom, Write};
+use reqwest::{self, async::{Client, Decoder, Response}};
+use std::io::{self, BufRead, BufReader, Error as IoError, Seek, SeekFrom, Write};
 use std::process::Command;
 use tempfile_fast::PersistableTempFile;
 use tokio::runtime::Runtime;
-use tokio::fs::File;
-use tokio::io::Read;
+use tokio::{self, fs::File, io::Read};
 use status::StatusExt;
-use std::sync::Arc;
+use std::{fs::File as SyncFile, sync::Arc, path::{Path, PathBuf}};
 
 pub type Url = Arc<String>;
 pub type Data = Arc<String>;
 pub type ReleasePath = String;
 
-const APT_LISTS_CACHE: &str = "/var/lib/apt/lists/";
-const PARTIAL: &str = "/var/lib/apt/lists/partial";
+const LISTS: &str = "/var/lib/apt/lists/";
+const PARTIAL: &str = "/var/lib/apt/lists/partial/";
 const CHECKSUM_PRIORITY: &[&str] = &["SHA256", "SHA1", "MD5Sum"];
 
 #[derive(Debug, Fail)]
@@ -36,7 +37,7 @@ pub enum DistUpdateError {
     #[fail(display = "failed to validate GPG signature: {}", why)]
     GpgValidation { why: ::failure::Error },
     #[fail(display = "failed to read local apt repo: {}", why)]
-    LocalRepo { why: TokioIoError },
+    LocalRepo { why: IoError },
     #[fail(display = "release file had invalid UTF-8")]
     InvalidUtf8,
     #[fail(display = "invalid release data: {}", why)]
@@ -47,6 +48,8 @@ pub enum DistUpdateError {
     Architectures { why: io::Error },
     #[fail(display = "failed to initialize decompressor: {}", why)]
     Decompressor { why: io::Error },
+    #[fail(display = "failed to fetch file: {}", why)]
+    Fetcher { why: FetchError },
 }
 
 pub struct Updater<'a> {
@@ -85,249 +88,167 @@ impl<'a> Updater<'a> {
             })?;
 
         // First, fetch all the release files and parse them.
-        let requests = fetch_release_files(self.client.clone(), self.keyring.clone(), &self.sources_list);
-        let release_files = futures::future::join_all(requests);
+        let mut requests = ReleaseFetcher::new(self.client.clone());
+
+        // Use a keyring if it was supplied.
+        if let Some(keyring) = self.keyring.as_ref() {
+            requests = requests.with_keyring(keyring.clone());
+        }
+
+        let release_files = futures::future::join_all(requests.fetch_releases(&self.sources_list));
         let release_file_results = Arc::new(runtime.block_on(release_files)?);
 
-        // Then, fetch all the files mentioned in those release files.
-        // TODO: Write the temporary files to their permanent locations and set the file times.
-        let futures = fetch_all_files(&self.client, &release_file_results, &architectures)?;
-        let results = runtime.block_on(futures::future::join_all(futures))?;
+        eprintln!("results: {:?}", release_file_results);
+
+        // // Then, fetch all the files mentioned in those release files.
+        // // TODO: Write the temporary files to their permanent locations and set the file times.
+        // let futures = fetch_all_files(&self.client, &release_file_results, &architectures)?;
+        // let results = runtime.block_on(futures::future::join_all(futures))?;
 
         Ok(())
     }
 }
 
-fn fetch_all_files(
-    client: &Arc<Client>,
-    data: &[(Url, Data, DistRelease)],
-    archs: &Arc<Vec<Architecture>>
-) -> Result<
-    Vec<impl Future<Item = (Url, ReleasePath, PersistableTempFile), Error = DistUpdateError> + Send + Send + 'static>,
-    DistUpdateError
->{
-    let releases = data.iter()
-        // TODO: Write the release data once all of its entries have been written.
-        .map(|(url, _data, release)| {
-            let (crypto, entries) = CHECKSUM_PRIORITY.iter()
-                .filter_map(move |&checksum| {
-                    let checksum: String = checksum.to_owned();
-                    release.sums.get(&checksum)
-                        .cloned()
-                        .map(|e| (checksum, e))
-                })
-                .next()
-                .ok_or_else(|| DistUpdateError::NoEntriesFound { repo: url.clone() })?;
+pub struct ReleaseFetcher {
+    client: Arc<Client>,
+    keyring: Option<Arc<AptKeyring>>
+}
 
-            let entries = entries.0.values().cloned().collect::<Vec<_>>();
-            let futures = fetch_entries(client.clone(), archs.clone(), crypto, url.clone(), entries);
-
-            Ok(futures)
-        });
-
-    let mut output = Vec::new();
-    for release in releases {
-        for data in release? {
-            output.push(Box::new(data));
-        }
-
+impl ReleaseFetcher {
+    pub fn new(client: Arc<Client>) -> Self {
+        Self { client, keyring: None }
     }
 
-    Ok(output)
-}
+    pub fn with_keyring(mut self, keyring: Arc<AptKeyring>) -> Self {
+        self.keyring = Some(keyring);
+        self
+    }
 
-fn fetch_entries(
-    client: Arc<Client>,
-    archs: Arc<Vec<Architecture>>,
-    crypto: String,
-    url: Url,
-    entries: Vec<Vec<ReleaseEntry>>,
-) -> impl Iterator<Item = impl Future<Item = (Url, ReleasePath, PersistableTempFile), Error = DistUpdateError> + Send> {
-    entries.into_iter()
-        // Pick the best option to fetch, favoring xz over gz.
-        .map(|entries| {
-            entries.iter().find(|entry| entry.path.ends_with(".gz"))
-                .or_else(|| entries.iter().find(|entry| entry.path.ends_with(".xz")))
-                .or_else(|| entries.last())
-                .expect("no entries found for this release")
-                .clone()
-        })
-        // Filter the architectures which we don't need to request.
-        .filter(move |entry| entry.variant().map_or(false, |var| match var {
-            ReleaseVariant::Binary(arch) => archs.contains(&arch),
-            ReleaseVariant::Contents(arch) => archs.contains(&arch),
-            ReleaseVariant::Source => true,
-            _ => false
-        }))
-        // The filename will point out the compression format to decode with.
-        .map(move |entry| {
-            let compression = if entry.path.ends_with(".xz") {
-                Compression::Xz
-            } else if entry.path.ends_with(".lz4") {
-                Compression::Lz4
-            } else if entry.path.ends_with(".gz") {
-                Compression::Gz
-            } else {
-                Compression::None
+    pub fn fetch_releases(self, list: &SourcesList)
+        -> impl Iterator<Item = impl Future<Item = (), Error = DistUpdateError>>
+    {
+        let to_fetch = list.dist_paths()
+            // Fetch the information we need to create our requests for the release files.
+            .map(move |source_entry| {
+                ReleaseFetch {
+                    trusted: source_entry.options.iter().any(|x| x.as_str() == "trusted=yes"),
+                    dist_path: source_entry.dist_path(),
+                    components: source_entry.components.clone()
+                }
+            })
+            .collect::<Vec<ReleaseFetch>>();
+
+        let keyring = self.keyring;
+        let client = self.client;
+
+        // Fetch them if we need to, then parse their data into memory.
+        to_fetch.into_iter().map(move |request| {
+            let inrelease = [&request.dist_path, "/InRelease"].concat();
+            let dest_file_name = inrelease[7..].replace("/", "_");
+
+            let dest: PathBuf = [LISTS, &dest_file_name].concat().into();
+            let partial: PathBuf = [PARTIAL, &dest_file_name].concat().into();
+
+            // TODO:
+            // - Handle local repos with the file:// url scheme
+            // - Handle trusted repos (fetch the release file instead)
+
+            let future = {
+                let dest = dest.clone();
+                AsyncFetcher::new(&client, inrelease)
+                    .request_to_path(dest.clone())
+                    .then_download(partial.clone())
+                    .then_rename()
+                    .into_future()
+                    .map_err(|why| DistUpdateError::Fetcher { why })
             };
 
-            (entry, compression)
-        })
-        // Fetch the request and store it into a temporary file.
-        .map(move |(entry, compression)| {
-            let from = [url.as_str(), entry.path.as_str()].concat();
-            let url = url.clone();
+            let future = future.map(|_| ReleaseData {
+                trusted: request.trusted,
+                path: dest,
+                components: request.components
+            });
 
-            // TODO: Handle local files as well as HTTP requests.
-            get_request(&client, from)
-                // TODO: Write to a temporary file instead of in memory.
-                // TODO: Check whether we need to download it or not.
-                .and_then(|resp| decode_to_vec(resp.into_body()))
-                // TODO: Validate that the file fetched has the correct checksum and size.
-                .and_then(move |decoded| {
-                    Decompressor::from_variant(io::Cursor::new(decoded), compression)
-                        .map_err(|why| DistUpdateError::Decompressor { why })
-                })
-                .map(move |mut decompressor| {
-                    let path = entry.path.clone();
-                    let mut file = PersistableTempFile::new_in(PARTIAL).unwrap();
-                    io::copy(&mut decompressor, &mut file).unwrap();
-                    file.seek(SeekFrom::Start(0)).unwrap();
-                    eprintln!("{} was fetched and decompressed", path);
-                    (url, path, file)
-                })
+            let future = ReleaseFetched::new(future, keyring.clone())
+                .validate_releases()
+                .into_future();
+
+            future.map(|_| ())
         })
+    }
 }
 
-/// Construct an iterator of futures for fetching each dist release file of each source.
-fn fetch_release_files(
-    client: Arc<Client>,
-    keyring: Option<Arc<AptKeyring>>,
-    list: &SourcesList,
-) -> impl Iterator<Item = impl Future<Item = (Url, Data, DistRelease), Error = DistUpdateError> + Send> {
-    let paths = list.dist_paths().cloned().collect::<Vec<_>>();
+pub struct ReleaseFetched<T: Future<Item = ReleaseData, Error = DistUpdateError> + Send> {
+    future: T,
+    keyring: Option<Arc<AptKeyring>>
+}
 
-    paths.into_iter()
-        // TODO: filter release files that have already been fetched.
-        .map(move |entry| {
-            fetch_release_file(&client, keyring.clone(), entry.dist_path())
-                .and_then(|(url, release_file)| {
-                    String::from_utf8(release_file)
+
+impl<T: Future<Item = ReleaseData, Error = DistUpdateError> + Send> ReleaseFetched<T> {
+    pub fn new(future: T, keyring: Option<Arc<AptKeyring>>) -> Self {
+        Self { future, keyring }
+    }
+
+    pub fn validate_releases(self) -> ValidatedRelease<impl Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> {
+        let future = self.future;
+        let keyring = self.keyring;
+
+        ValidatedRelease {
+            future: future.and_then(|release_data| {
+                futures::future::lazy(move || {
+                    let mut release_file = SyncFile::open(&release_data.path)
+                        .expect("release file not found");
+
+                    let mut output = Vec::new();
+
+                    if release_data.trusted {
+                        unimplemented!()
+                    } else {
+                        debug!("verifying GPG signature of {}", release_data.path.display());
+                        verify_clearsign_armour(&mut BufReader::new(release_file), &mut output, &keyring.expect("keyring required"))
+                            .map_err(|why| DistUpdateError::GpgValidation { why })?;
+                    }
+
+
+                    debug!("parsing release file at {}", release_data.path.display());
+                    let release: DistRelease = String::from_utf8(output)
                         .map_err(|_| DistUpdateError::InvalidUtf8)
                         .and_then(|string| {
                             string.parse::<DistRelease>()
                                 .map_err(|why| DistUpdateError::InvalidReleaseData { why })
-                                .map(|r| (Arc::new(url), Arc::new(string), r))
-                        })
+                        })?;
+
+                    Ok(ReleaseInfo { release, components: release_data.components })
                 })
             })
-    }
-
-/// Construct an iterator of futures for fetching each dist release file.
-///
-/// # Keyrings
-///
-/// If a keyring exists, we will fetch the "InRelease" file and check the signature against
-/// known keys in the keyring. Otherwise, we will fetch the "Release" file instead.
-///
-/// # Implemented protocols
-///
-/// - If the release file comes from a file, `tokio::fs::File` will be used.
-/// - If it is a HTTP/HTTPS URL, `reqwest::async::Client` is used.
-fn fetch_release_file(
-    client: &Arc<Client>,
-    keyring: Option<Arc<AptKeyring>>,
-    mut url: String
-) -> impl Future<Item = (String, Vec<u8>), Error = DistUpdateError> + Send {
-    if ! url.ends_with('/') {
-        url.push('/')
-    }
-
-    let future: Box<dyn Future<Item = Vec<u8>, Error = DistUpdateError> + Send> = match keyring {
-        Some(keyring) => {
-            let inrelease_path = [url.as_str(), "InRelease"].concat();
-
-            if inrelease_path.starts_with("file://") {
-                let inrelease_decoded = read_file(inrelease_path[7..].to_owned());
-
-                let inrelease = validate_gpg_signature(inrelease_decoded, keyring);
-                Box::new(inrelease)
-            } else {
-                let inrelease_decoded = get_request(&client, inrelease_path)
-                    .and_then(|resp| decode_to_vec(resp.into_body()));
-
-                let inrelease = validate_gpg_signature(inrelease_decoded, keyring);
-                Box::new(inrelease)
-            }
         }
-        None => {
-            let release_path = [url.as_str(), "Release"].concat();
-
-            if release_path.starts_with("file://") {
-                Box::new(read_file(release_path[7..].to_owned()))
-            } else {
-                let release = get_request(&client, release_path)
-                    .and_then(|resp| decode_to_vec(resp.into_body()));
-                Box::new(release)
-            }
-        }
-    };
-
-    future.map(|r| (url, r))
+    }
 }
 
-fn get_request(client: &Arc<Client>, url: String) -> impl Future<Item = Response, Error = DistUpdateError> + Send {
-    client.get(&url)
-        .send()
-        .inspect(move |_v| {
-            eprintln!("GET {}", url);
-        })
-        .and_then(|resp| resp.error_for_status())
-        .map_err(|why| DistUpdateError::Request { why })
+pub struct ValidatedRelease<T: Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> {
+    future: T,
 }
 
-fn read_file(path: String) -> impl Future<Item = Vec<u8>, Error = DistUpdateError> + Send {
-    File::open(path)
-        .and_then(|mut file| {
-            let mut release_file = Vec::new();
-            file.read_to_end(&mut release_file)?;
-            Ok(release_file)
-        })
-        .map_err(|why| DistUpdateError::LocalRepo { why })
+impl<T: Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> ValidatedRelease<T> {
+    pub fn into_future(self) -> T { self.future }
 }
 
-/// Take a reqwest::Decoder and convert it into a future which collects it into a `Vec<u8>`
-fn decode_to_vec(decoder: Decoder) -> impl Future<Item = Vec<u8>, Error = DistUpdateError> + Send {
-    decoder
-        .concat2()
-        .map(|chunk| {
-            eprintln!("finished decoding");
-            let chunk: &[u8] = &chunk;
-            Vec::from(chunk)
-        })
-        .map_err(|why| io::Error::new(
-            io::ErrorKind::Other,
-            format!("failed to fetch: {}", why)
-        ))
-        .map_err(|why| DistUpdateError::Decoder { why })
+pub struct ReleaseFetch {
+    /// If we trust the repo, we will not require a keyring.
+    trusted: bool,
+    /// The base directory of this suites dist path.
+    dist_path: String,
+    /// We should only fetch files from these components in the release file.
+    components: Vec<String>
 }
 
-/// Validate the GPG signature from the given input.
-fn validate_gpg_signature<I>(
-    input: I,
-    keyring: Arc<AptKeyring>
-) -> impl Future<Item = Vec<u8>, Error = DistUpdateError> + Send
-    where I: Future<Item = Vec<u8>, Error = DistUpdateError> + Send
-{
-    input
-        .and_then(move |decoded| {
-            let mut output = io::Cursor::new(Vec::new());
-            let keyring: &AptKeyring = keyring.as_ref();
-            let keyring: &Keyring = keyring.as_ref();
-            verify_clearsign_armour(&mut io::Cursor::new(decoded), &mut output, keyring)
-                .map_err(|why| DistUpdateError::GpgValidation { why })?;
+pub struct ReleaseData {
+    trusted: bool,
+    path: PathBuf,
+    components: Vec<String>
+}
 
-            Ok(output.into_inner())
-        })
-
+pub struct ReleaseInfo {
+    release: DistRelease,
+    components: Vec<String>
 }

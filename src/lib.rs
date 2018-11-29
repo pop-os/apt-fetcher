@@ -1,10 +1,13 @@
+#[macro_use] extern crate failure_derive;
+#[macro_use] extern crate log;
+
 extern crate apt_keyring as keyring;
+extern crate apt_sources_lists;
+extern crate async_fetcher;
 extern crate deb_architectures;
 extern crate deb_release_file;
-extern crate apt_sources_lists;
 extern crate failure;
-#[macro_use]
-extern crate failure_derive;
+extern crate filetime;
 extern crate futures;
 extern crate gpgrv;
 extern crate libflate;

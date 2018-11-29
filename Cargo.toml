@@ -22,6 +22,9 @@ xz2 = "0.1.6"
 libflate = "0.1.18"
 lz4 = "1.23.0"
 tempfile-fast = "0.2.3"
+async-fetcher = { path = "../async-fetcher" }
+log = "0.4.6"
+filetime = "0.2.4"
 
 [dev-dependencies]
 reqwest = "0.9.4"
