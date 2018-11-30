@@ -22,7 +22,7 @@ xz2 = "0.1.6"
 libflate = "0.1.18"
 lz4 = "1.23.0"
 tempfile-fast = "0.2.3"
-async-fetcher = { path = "../async-fetcher" }
+async-fetcher = { git = "https://github.com/pop-os/async-fetcher" }
 log = "0.4.6"
 filetime = "0.2.4"
 

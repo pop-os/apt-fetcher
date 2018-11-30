@@ -24,9 +24,12 @@ pub fn main() {
         .tokio_update();
 
     println!("update finished in {:?}", Instant::now() - start);
-    println!("fetched {:#?}", result);
-}
 
+    match result {
+        Ok(_) => println!("success"),
+        Err(why) => eprintln!("failed to update: {}", why)
+    }
+}
 
 // Configuring the logger
 

@@ -14,7 +14,7 @@ use tempfile_fast::PersistableTempFile;
 use tokio::runtime::Runtime;
 use tokio::{self, fs::File, io::Read};
 use status::StatusExt;
-use std::{fs::File as SyncFile, sync::Arc, path::{Path, PathBuf}};
+use std::{fs::{self as sync_fs, File as SyncFile}, sync::Arc, path::{Path, PathBuf}};
 
 pub type Url = Arc<String>;
 pub type Data = Arc<String>;
@@ -87,6 +87,10 @@ impl<'a> Updater<'a> {
                 DistUpdateError::Tokio { what: "constructing runtime", why }
             })?;
 
+        if ! Path::new(PARTIAL).exists() {
+            let _ = sync_fs::create_dir_all(PARTIAL);
+        }
+
         // First, fetch all the release files and parse them.
         let mut requests = ReleaseFetcher::new(self.client.clone());
 
@@ -129,12 +133,16 @@ impl ReleaseFetcher {
     {
         let to_fetch = list.dist_paths()
             // Fetch the information we need to create our requests for the release files.
-            .map(move |source_entry| {
-                ReleaseFetch {
+            .filter_map(move |source_entry| {
+                if source_entry.source {
+                    return None;
+                }
+
+                Some(ReleaseFetch {
                     trusted: source_entry.options.iter().any(|x| x.as_str() == "trusted=yes"),
                     dist_path: source_entry.dist_path(),
                     components: source_entry.components.clone()
-                }
+                })
             })
             .collect::<Vec<ReleaseFetch>>();
 
@@ -151,7 +159,7 @@ impl ReleaseFetcher {
 
             // TODO:
             // - Handle local repos with the file:// url scheme
-            // - Handle trusted repos (fetch the release file instead)
+            // - Handle trusted repos
 
             let future = {
                 let dest = dest.clone();
@@ -233,6 +241,7 @@ impl<T: Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> ValidatedRel
     pub fn into_future(self) -> T { self.future }
 }
 
+#[derive(Debug)]
 pub struct ReleaseFetch {
     /// If we trust the repo, we will not require a keyring.
     trusted: bool,
