@@ -8,23 +8,26 @@ readme = "README"
 
 [dependencies]
 apt-keyring = { git = "https://github.com/pop-os/apt-keyring" }
-deb-architectures = { git = "https://github.com/pop-os/deb-architectures" }
-deb-release-file = { git = "https://github.com/pop-os/deb-release-file" }
+apt-release-file = { git = "https://github.com/pop-os/apt-release-file" }
 apt-sources-lists = { git = "https://github.com/pop-os/apt-sources-lists" }
-futures = "0.1.25"
-reqwest = "0.9.5"
-tokio = "0.1.11"
+async-fetcher = { path = "../async-fetcher" }
+deb-architectures = "0.1.0"
 failure = "0.1.3"
 failure_derive = "0.1.3"
-tempfile = "3.0.4"
-gpgrv = "0.1.1"
-xz2 = "0.1.6"
-libflate = "0.1.18"
-lz4 = "1.23.0"
-tempfile-fast = "0.2.3"
-async-fetcher = { git = "https://github.com/pop-os/async-fetcher" }
-log = "0.4.6"
 filetime = "0.2.4"
+flate2 = "1.0.5"
+futures = "0.1.25"
+gpgrv = "0.1.1"
+log = "0.4.6"
+lz4 = "1.23.0"
+md-5 = "0.8.0"
+reqwest = "0.9.5"
+sha-1 = "0.8.1"
+sha2 = "0.8.0"
+tempfile = "3.0.4"
+tempfile-fast = "0.2.3"
+tokio = "0.1.11"
+xz2 = "0.1.6"
 
 [dev-dependencies]
 reqwest = "0.9.4"

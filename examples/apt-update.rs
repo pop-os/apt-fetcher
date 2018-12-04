@@ -27,7 +27,7 @@ pub fn main() {
 
     match result {
         Ok(_) => println!("success"),
-        Err(why) => eprintln!("failed to update: {}", why)
+        Err(why) => eprintln!("failed to update: {:?}", why)
     }
 }
 
