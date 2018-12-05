@@ -1,6 +1,5 @@
 extern crate apt_fetcher;
 extern crate apt_keyring;
-#[macro_use]
 extern crate clap;
 extern crate reqwest;
 extern crate log;
@@ -50,8 +49,7 @@ impl log::Log for SimpleLogger {
 
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata())
-            && (record.target() == "async_fetcher"
-            || record.target() == "apt_fetcher")
+            && (record.target().starts_with("async_fetcher") || record.target().starts_with("apt_fetcher"))
         {
             eprintln!("{}: {} - {}", record.target(), record.level(), record.args());
         }

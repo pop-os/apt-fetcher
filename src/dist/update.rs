@@ -1,24 +1,21 @@
+use apt_release_file::{DistRelease, ReleaseVariant};
+use apt_sources_lists::*;
 use async_fetcher::{AsyncFetcher, CompletedState, FetchError};
 use deb_architectures::{Architecture, supported_architectures};
-use apt_release_file::{DistRelease, ReleaseEntry, ReleaseVariant};
-use apt_sources_lists::*;
-use keyring::AptKeyring;
-use filetime;
-use futures::{self, Future, Stream};
-use gpgrv::{Keyring, verify_clearsign_armour};
-use reqwest::{self, async::{Client, Decoder, Response}};
-use std::io::{self, BufRead, BufReader, Error as IoError, Seek, SeekFrom, Write};
-use std::process::Command;
-use tempfile_fast::PersistableTempFile;
-use tokio::runtime::Runtime;
-use tokio::{self, fs::File, io::Read};
-use status::StatusExt;
-use std::{fs::{self as sync_fs, File as SyncFile}, sync::Arc, path::{Path, PathBuf}};
 use flate2::write::GzDecoder;
-use xz2::write::XzDecoder;
+use futures::{self, Future};
+use gpgrv::verify_clearsign_armour;
+use keyring::AptKeyring;
 use md5::Md5;
+use reqwest::{self, async::Client};
 use sha1::Sha1;
 use sha2::Sha256;
+use status::StatusExt;
+use std::{fs::{self as sync_fs, File as SyncFile}, sync::Arc, path::{Path, PathBuf}};
+use std::io::{self, BufReader, Error as IoError};
+use std::process::Command;
+use tokio::{self, runtime::Runtime};
+use xz2::write::XzDecoder;
 
 pub type Url = Arc<str>;
 pub type ReleasePath = String;
@@ -194,7 +191,6 @@ impl ReleaseFetcher {
             let future = ReleaseFetched::new(future, keyring.clone())
                 .validate_releases()
                 .fetch_entries(client.clone(), archs.clone());
-
             future.map(|_| ())
         })
     }
@@ -284,12 +280,28 @@ impl<T: Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> ValidatedRel
                 }
             };
 
-            let entries = entries.filter_components(components)
+            let base = entries.base;
+            let comps = entries.components;
+
+            let entries = comps.into_iter()
+                // Filter the components that we want to fetch from.
+                .filter_map(move |(comp, entries)| {
+                    if components.iter().any(|c| c.as_ref() == comp) {
+                        Some(entries)
+                    } else {
+                        None
+                    }
+                })
+                .flat_map(|comp| comp.into_iter())
+                // Also fetch the base entries
+                .chain(base.into_iter())
                 // Filter the sources which we don't need to request.
-                .filter(move |(item, entries)| {
+                .filter(move |(_item, entries)| {
                     entries.first().map_or(false, |entry| {
                         entry.variant().map_or(false, |var| match var {
-                            ReleaseVariant::Binary(arch) => archs.contains(&arch),
+                            ReleaseVariant::Binary(arch) => {
+                                archs.contains(&arch) && !entry.path.contains("debian-installer")
+                            },
                             ReleaseVariant::Contents(arch) => archs.contains(&arch),
                             ReleaseVariant::Source => true,
                             _ => false
@@ -314,7 +326,7 @@ impl<T: Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> ValidatedRel
                         compression: None,
                     };
 
-                    if preferred.path != item {
+                    if preferred.path != item && preferred.path.contains("Packages") {
                         let decompressed = entries.iter().find(|entry| entry.path == item)
                             .expect("decompressed entry not found");
 
@@ -338,17 +350,10 @@ impl<T: Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> ValidatedRel
                 // Construct futures for fetching each file that is to be fetched.
                 .map(move |(request, &crypto)| {
                     let fetch_url = [url.as_ref(), &request.path].concat();
-                    let file: &str = match request.path.rfind('/') {
-                        Some(pos) => &request.path[pos + 1..],
-                        None => &request.path
-                    };
-
-                    let file_name = [&url[7..].replace("/", "_"), file].concat();
+                    let file_name = &fetch_url[7..].replace("/", "_");
 
                     let dest = [LISTS, &file_name[..file_name.len() - request.path_trim as usize]].concat();
                     let partial_des = PathBuf::from([PARTIAL, &file_name].concat());
-
-                    debug!("dest: {}\npartial: {:?}\nurl: {}", dest, partial_des, fetch_url);
 
                     let fetched_checksum: Arc<str> = Arc::from(request.checksum);
                     let dest_checksum: Arc<str> = Arc::from(
@@ -393,7 +398,7 @@ impl<T: Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> ValidatedRel
                     let fetch_request = match request.compression {
                         Some(Compression::Xz) => {
                             validate_destination_checksum(
-                                fetch_request.then_process(move |file| Ok(Box::new(XzDecoder::new(file)))),
+                                fetch_request.then_process(move |file| Ok(Box::new(XzDecoder::new_multi_decoder(file)))),
                                 crypto,
                                 dest_checksum
                             )
