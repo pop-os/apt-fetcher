@@ -1,9 +1,9 @@
-use apt_release_file::{DistRelease, ReleaseVariant};
+use apt_release_file::*;
 use apt_sources_lists::*;
 use async_fetcher::{AsyncFetcher, CompletedState, FetchError};
 use deb_architectures::{Architecture, supported_architectures};
 use flate2::write::GzDecoder;
-use futures::{self, Future};
+use futures::{self, Future, sync::oneshot};
 use gpgrv::verify_clearsign_armour;
 use keyring::AptKeyring;
 use md5::Md5;
@@ -14,7 +14,7 @@ use status::StatusExt;
 use std::{fs::{self as sync_fs, File as SyncFile}, sync::Arc, path::{Path, PathBuf}};
 use std::io::{self, BufReader, Error as IoError};
 use std::process::Command;
-use tokio::{self, runtime::Runtime};
+use tokio::{self, executor::DefaultExecutor, runtime::Runtime};
 use xz2::write::XzDecoder;
 
 pub type Url = Arc<str>;
@@ -213,6 +213,7 @@ impl<T: Future<Item = ReleaseData, Error = DistUpdateError> + Send> ReleaseFetch
 
         ValidatedRelease {
             future: future.and_then(|release_data| {
+                // NOTE: Spawning threads to handle this future does not seem to make the process faster.
                 futures::future::lazy(move || {
                     let release_file = SyncFile::open(&release_data.path)
                         .expect("release file not found");
@@ -222,12 +223,12 @@ impl<T: Future<Item = ReleaseData, Error = DistUpdateError> + Send> ReleaseFetch
                     if release_data.trusted {
                         unimplemented!()
                     } else {
-                        debug!("verifying GPG signature of {}", release_data.path.display());
+                        trace!("verifying GPG signature of {}", release_data.path.display());
                         verify_clearsign_armour(&mut BufReader::new(release_file), &mut output, &keyring.expect("keyring required"))
                             .map_err(|why| DistUpdateError::GpgValidation { why })?;
                     }
 
-                    debug!("parsing release file at {}", release_data.path.display());
+                    trace!("parsing release file at {}", release_data.path.display());
                     let release: DistRelease = String::from_utf8(output)
                         .map_err(|_| DistUpdateError::InvalidUtf8)
                         .and_then(|string| {
@@ -299,11 +300,9 @@ impl<T: Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> ValidatedRel
                 .filter(move |(_item, entries)| {
                     entries.first().map_or(false, |entry| {
                         entry.variant().map_or(false, |var| match var {
-                            ReleaseVariant::Binary(arch) => {
-                                archs.contains(&arch) && !entry.path.contains("debian-installer")
-                            },
-                            ReleaseVariant::Contents(arch) => archs.contains(&arch),
-                            ReleaseVariant::Source => true,
+                            EntryVariant::Binary(_, arch) => archs.contains(&arch),
+                            EntryVariant::Contents(arch, _ext) => archs.contains(&arch),
+                            EntryVariant::Source(_) => true,
                             _ => false
                         })
                     })
@@ -415,8 +414,11 @@ impl<T: Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> ValidatedRel
                         }
                     };
 
-                    // Finally, make the error compatible with our program.
-                    fetch_request.map_err(|why| DistUpdateError::Fetcher { why })
+                    // Execute this request in the background.
+                    oneshot::spawn(
+                        fetch_request.map_err(|why| DistUpdateError::Fetcher { why }),
+                        &DefaultExecutor::current()
+                    )
                 });
 
             Box::new(futures::future::join_all(entries).map(|_| ()))
