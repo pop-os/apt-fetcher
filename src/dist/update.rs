@@ -304,12 +304,12 @@ impl<T: Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> ValidatedRel
                     entries.first().map_or(false, |entry| {
                         entry.variant().map_or(false, |var| match var {
                             EntryVariant::Binary(_, arch)
-                                | EntryVariant::Contents(arch, _) =>
-                                // | EntryVariant::Dep11(Dep11Entry::Components(arch, _)) =>
+                                | EntryVariant::Contents(arch, _)
+                                | EntryVariant::Dep11(Dep11Entry::Components(arch, _)) =>
                             {
                                 archs.contains(&arch)
                             },
-                            // EntryVariant::Dep11(Dep11Entry::Icons(_res, _ext)) => true,
+                            EntryVariant::Dep11(Dep11Entry::Icons(_res, _ext)) => true,
                             EntryVariant::Source(_) => true,
                             _ => false
                         })
