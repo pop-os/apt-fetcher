@@ -49,9 +49,9 @@ impl log::Log for SimpleLogger {
 
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata())
-            && (record.target().starts_with("async_fetcher") || record.target().starts_with("apt_fetcher"))
+            && record.target().starts_with("apt_fetcher")
         {
-            eprintln!("{}: {} - {}", record.target(), record.level(), record.args());
+            eprintln!("{}", record.args());
         }
     }
 

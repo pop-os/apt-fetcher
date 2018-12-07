@@ -1,6 +1,6 @@
 use apt_release_file::*;
 use apt_sources_lists::*;
-use async_fetcher::{AsyncFetcher, CompletedState, FetchError};
+use async_fetcher::{AsyncFetcher, CompletedState, FetchError, FetchEvent};
 use deb_architectures::{Architecture, supported_architectures};
 use flate2::write::GzDecoder;
 use futures::{self, Future, sync::oneshot};
@@ -161,7 +161,7 @@ impl ReleaseFetcher {
 
         // Fetch them if we need to, then parse their data into memory.
         to_fetch.into_iter().map(move |request| {
-            let inrelease = [&request.dist_path, "/InRelease"].concat();
+            let inrelease: Arc<str> = Arc::from([&request.dist_path, "/InRelease"].concat());
             let dest_file_name = inrelease[7..].replace("/", "_");
 
             let dest: PathBuf = [LISTS, &dest_file_name].concat().into();
@@ -173,7 +173,22 @@ impl ReleaseFetcher {
 
             let future = {
                 let dest = dest.clone();
-                AsyncFetcher::new(&client, inrelease)
+                AsyncFetcher::new(&client, inrelease.clone())
+                    .with_progress_callback(move |event| match event {
+                        FetchEvent::Get => {
+                            info!("     GET: {}", inrelease)
+                        }
+                        FetchEvent::AlreadyFetched => {
+                            info!("  PASSED: {}", inrelease)
+                        }
+                        FetchEvent::DownloadComplete => {
+                            info!("   DCOMP: {}", inrelease)
+                        }
+                        FetchEvent::Finished => {
+                            info!("FINISHED: {}", inrelease)
+                        }
+                        _ => ()
+                    })
                     .request_to_path(dest.clone())
                     .then_download(partial.clone())
                     .then_rename()
@@ -371,7 +386,7 @@ impl<T: Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> ValidatedRel
                 })
                 // Construct futures for fetching each file that is to be fetched.
                 .map(move |(request, &crypto)| {
-                    let fetch_url = [url.as_ref(), &request.path].concat();
+                    let fetch_url: Arc<str> = Arc::from([url.as_ref(), &request.path].concat());
                     let file_name = &fetch_url[7..].replace("/", "_");
 
                     let dest = [LISTS, &file_name[..file_name.len() - request.path_trim as usize]].concat();
@@ -383,7 +398,22 @@ impl<T: Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> ValidatedRel
                             .unwrap_or_else(|| fetched_checksum.as_ref().to_owned())
                     );
 
-                    let fetch_request = AsyncFetcher::new(&client, fetch_url);
+                    let fetch_request = AsyncFetcher::new(&client, fetch_url.clone())
+                        .with_progress_callback(move |event| match event {
+                            FetchEvent::Get => {
+                                info!("     GET: {}", fetch_url)
+                            }
+                            FetchEvent::AlreadyFetched => {
+                                info!("  PASSED: {}", fetch_url)
+                            }
+                            FetchEvent::DownloadComplete => {
+                                info!("   DCOMP: {}", fetch_url)
+                            }
+                            FetchEvent::Finished => {
+                                info!("FINISHED: {}", fetch_url)
+                            }
+                            _ => ()
+                        });
 
                     // Specify the checksum variant to use.
                     let fetch_request = match crypto {
