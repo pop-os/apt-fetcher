@@ -288,27 +288,35 @@ impl<T: Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> ValidatedRel
                 // Filter the components that we want to fetch from.
                 .filter_map(move |(comp, entries)| {
                     if components.iter().any(|c| c.as_ref() == comp) {
-                        Some(entries)
+                        Some((comp, entries))
                     } else {
                         None
                     }
                 })
-                .flat_map(|comp| comp.into_iter())
+                .flat_map(|(comp, entries)| {
+                    let comp: Arc<str> = Arc::from(comp);
+                    entries.into_iter().map(move |e| (Some(comp.clone()), e))
+                })
                 // Also fetch the base entries
-                .chain(base.into_iter())
+                .chain(base.into_iter().map(|entry| (None, entry)))
                 // Filter the sources which we don't need to request.
-                .filter(move |(_item, entries)| {
+                .filter(move |(_comp, (_item, entries))| {
                     entries.first().map_or(false, |entry| {
                         entry.variant().map_or(false, |var| match var {
-                            EntryVariant::Binary(_, arch) => archs.contains(&arch),
-                            EntryVariant::Contents(arch, _ext) => archs.contains(&arch),
+                            EntryVariant::Binary(_, arch)
+                                | EntryVariant::Contents(arch, _) =>
+                                // | EntryVariant::Dep11(Dep11Entry::Components(arch, _)) =>
+                            {
+                                archs.contains(&arch)
+                            },
+                            // EntryVariant::Dep11(Dep11Entry::Icons(_res, _ext)) => true,
                             EntryVariant::Source(_) => true,
                             _ => false
                         })
                     })
                 })
                 // Fetch the preferred paths and their checksums.
-                .map(move |(item, entries)| {
+                .map(move |(comp, (item, entries))| {
                     // TODO: Optimize this.
                     let partial = entries.iter().find(|entry| entry.path.ends_with(".xz"))
                         .or_else(|| entries.iter().find(|entry| entry.path.ends_with(".gz")))
@@ -316,32 +324,47 @@ impl<T: Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> ValidatedRel
                         .expect("no entries found for this release")
                         .clone();
 
+                    let variant = partial.variant();
+
                     let mut preferred = PreferredRequest {
                         checksum_decompressed: None,
                         checksum: partial.sum,
-                        path: partial.path,
+                        path: match comp {
+                            Some(comp) => [&comp, "/", partial.path.as_str()].concat(),
+                            None => partial.path
+                        },
                         path_trim: 0,
                         size: partial.size,
                         compression: None,
                     };
 
-                    if preferred.path != item && preferred.path.contains("Packages") {
-                        let decompressed = entries.iter().find(|entry| entry.path == item)
-                            .expect("decompressed entry not found");
+                    if preferred.path != item {
+                        if let Some(EntryVariant::Binary(BinaryEntry::Packages(ext), _)) = variant {
+                            let mut decompressed = &entries[0];
+                            for entry in entries.iter().skip(1) {
+                                if decompressed.path.len() > entry.path.len() {
+                                    decompressed = entry;
+                                }
+                            }
 
-                        preferred.checksum_decompressed = Some(decompressed.sum.clone());
-                        preferred.compression = if preferred.path.ends_with(".xz") {
-                            preferred.path_trim = 3;
-                            Some(Compression::Xz)
-                        } else if preferred.path.ends_with(".lz4") {
-                            preferred.path_trim = 4;
-                            Some(Compression::Lz4)
-                        } else if preferred.path.ends_with(".gz") {
-                            preferred.path_trim = 3;
-                            Some(Compression::Gz)
-                        } else {
-                            panic!("unsupported compression: {:?}", preferred.path)
-                        };
+                            preferred.checksum_decompressed = Some(decompressed.sum.clone());
+                            preferred.compression = match ext.as_ref().map(|x| x.as_str()) {
+                                Some("xz") => {
+                                    preferred.path_trim = 3;
+                                    Some(Compression::Xz)
+                                }
+                                Some("gz") => {
+                                    preferred.path_trim = 3;
+                                    Some(Compression::Gz)
+                                }
+                                Some(ext) => {
+                                    panic!("unsupported compression: {:?}: {}", preferred.path, ext);
+                                }
+                                None => {
+                                    panic!("compression required: {:?}", preferred.path);
+                                }
+                            };
+                        }
                     }
 
                     (preferred, crypto)
