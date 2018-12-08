@@ -3,7 +3,7 @@ use apt_sources_lists::*;
 use async_fetcher::{AsyncFetcher, CompletedState, FetchError, FetchEvent};
 use deb_architectures::{Architecture, supported_architectures};
 use flate2::write::GzDecoder;
-use futures::{self, Future, sync::oneshot};
+use futures::{self, IntoFuture, Future, sync::oneshot};
 use gpgrv::verify_clearsign_armour;
 use keyring::AptKeyring;
 use md5::Md5;
@@ -164,8 +164,8 @@ impl ReleaseFetcher {
             let inrelease: Arc<str> = Arc::from([&request.dist_path, "/InRelease"].concat());
             let dest_file_name = inrelease[7..].replace("/", "_");
 
-            let dest: PathBuf = [LISTS, &dest_file_name].concat().into();
-            let partial: PathBuf = [PARTIAL, &dest_file_name].concat().into();
+            let dest: Arc<Path> = Arc::from(PathBuf::from([LISTS, &dest_file_name].concat()));
+            let partial: Arc<Path> = Arc::from(PathBuf::from([PARTIAL, &dest_file_name].concat()));
 
             // TODO:
             // - Handle local repos with the file:// url scheme
@@ -389,8 +389,10 @@ impl<T: Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> ValidatedRel
                     let fetch_url: Arc<str> = Arc::from([url.as_ref(), &request.path].concat());
                     let file_name = &fetch_url[7..].replace("/", "_");
 
-                    let dest = [LISTS, &file_name[..file_name.len() - request.path_trim as usize]].concat();
-                    let partial_des = PathBuf::from([PARTIAL, &file_name].concat());
+                    let dest: Arc<Path> = Arc::from(PathBuf::from(
+                        [LISTS, &file_name[..file_name.len() - request.path_trim as usize]].concat()
+                    ));
+                    let partial_des: Arc<Path> = Arc::from(PathBuf::from([PARTIAL, &file_name].concat()));
 
                     let fetched_checksum: Arc<str> = Arc::from(request.checksum);
                     let dest_checksum: Arc<str> = Arc::from(
@@ -418,17 +420,17 @@ impl<T: Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> ValidatedRel
                     // Specify the checksum variant to use.
                     let fetch_request = match crypto {
                         ChecksumKind::Sha256 => {
-                            fetch_request.request_to_path_with_checksum::<Sha256>(dest.into(), &dest_checksum)
+                            fetch_request.request_to_path_with_checksum::<Sha256>(dest, &dest_checksum)
                                 .then_download(partial_des.clone())
                                 .with_checksum::<Sha256>(fetched_checksum.clone())
                         }
                         ChecksumKind::Sha1 => {
-                            fetch_request.request_to_path_with_checksum::<Sha1>(dest.into(), &dest_checksum)
+                            fetch_request.request_to_path_with_checksum::<Sha1>(dest, &dest_checksum)
                                 .then_download(partial_des.clone())
                                 .with_checksum::<Sha1>(fetched_checksum.clone())
                         }
                         ChecksumKind::Md5 => {
-                            fetch_request.request_to_path_with_checksum::<Md5>(dest.into(), &dest_checksum)
+                            fetch_request.request_to_path_with_checksum::<Md5>(dest, &dest_checksum)
                                 .then_download(partial_des.clone())
                                 .with_checksum::<Md5>(fetched_checksum.clone())
                         }
@@ -494,7 +496,7 @@ pub struct ReleaseFetch {
 pub struct ReleaseData {
     trusted: bool,
     base_url: String,
-    path: PathBuf,
+    path: Arc<Path>,
     components: Vec<String>
 }
 
