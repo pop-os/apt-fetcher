@@ -3,7 +3,8 @@ use apt_sources_lists::*;
 use async_fetcher::{AsyncFetcher, CompletedState, FetchError, FetchEvent};
 use deb_architectures::{Architecture, supported_architectures};
 use flate2::write::GzDecoder;
-use futures::{self, IntoFuture, Future, sync::oneshot};
+use futures::{self, IntoFuture, Future, Stream, future::{lazy, join_all}, sync::{mpsc, oneshot}};
+use futures::stream::futures_unordered;
 use gpgrv::verify_clearsign_armour;
 use keyring::AptKeyring;
 use md5::Md5;
@@ -111,11 +112,10 @@ impl<'a> Updater<'a> {
             requests = requests.with_keyring(keyring.clone());
         }
 
-        let release_files = futures::future::join_all(
-            requests.fetch_updates(&self.sources_list, architectures)
-        );
+        let release_files = requests.fetch_updates(&self.sources_list, architectures)
+            .collect();
 
-        let release_file_results = runtime.block_on(release_files)?;
+        let release_file_results = runtime.block_on(release_files);
 
         eprintln!("results: {:?}", release_file_results);
 
@@ -139,7 +139,7 @@ impl ReleaseFetcher {
     }
 
     pub fn fetch_updates(self, list: &SourcesList, archs: Arc<Vec<Architecture>>)
-        -> impl Iterator<Item = impl Future<Item = (), Error = DistUpdateError>>
+        -> impl Stream<Item = Result<(), DistUpdateError>, Error = ()>
     {
         let to_fetch = list.dist_paths()
             // Fetch the information we need to create our requests for the release files.
@@ -160,7 +160,7 @@ impl ReleaseFetcher {
         let client = self.client;
 
         // Fetch them if we need to, then parse their data into memory.
-        to_fetch.into_iter().map(move |request| {
+        let iterator = to_fetch.into_iter().map(move |request| {
             let inrelease: Arc<str> = Arc::from([&request.dist_path, "/InRelease"].concat());
             let dest_file_name = inrelease[7..].replace("/", "_");
 
@@ -179,7 +179,7 @@ impl ReleaseFetcher {
                             info!("     GET: {}", inrelease)
                         }
                         FetchEvent::AlreadyFetched => {
-                            info!("  PASSED: {}", inrelease)
+                            info!("  PASSED: {}: {}", inrelease, std::process::id())
                         }
                         FetchEvent::DownloadComplete => {
                             info!("   DCOMP: {}", inrelease)
@@ -203,11 +203,28 @@ impl ReleaseFetcher {
                 components: request.components
             });
 
-            let future = ReleaseFetched::new(future, keyring.clone())
+            ReleaseFetched::new(future, keyring.clone())
                 .validate_releases()
-                .fetch_entries(client.clone(), archs.clone());
-            future.map(|_| ())
-        })
+                .fetch_entries(client.clone(), archs.clone())
+                .map(|_| ())
+                .then(Ok)
+        });
+
+        let future = lazy(move || {
+            let (tx, rx) = mpsc::unbounded();
+            for future in iterator {
+                let tx = tx.clone();
+
+                tokio::spawn(future.then(move |v| {
+                    tx.unbounded_send(v);
+                    Ok(())
+                }));
+            }
+
+            Ok(rx.then(|v| v.unwrap()))
+        });
+
+        future.flatten_stream()
     }
 }
 
@@ -384,7 +401,6 @@ impl<T: Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> ValidatedRel
 
                     (preferred, crypto)
                 })
-                // Construct futures for fetching each file that is to be fetched.
                 .map(move |(request, &crypto)| {
                     let fetch_url: Arc<str> = Arc::from([url.as_ref(), &request.path].concat());
                     let file_name = &fetch_url[7..].replace("/", "_");
@@ -436,11 +452,11 @@ impl<T: Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> ValidatedRel
                         }
                     };
 
-                    fn validate_destination_checksum<T: 'static + Future<Item = (), Error = FetchError> + Send>(
+                    fn validate_destination_checksum<T: 'static + Future<Item = Arc<Path>, Error = FetchError> + Send>(
                         request: CompletedState<T>,
                         kind: ChecksumKind,
                         checksum: Arc<str>
-                    ) -> Box<dyn Future<Item = (), Error = FetchError> + Send> {
+                    ) -> Box<dyn Future<Item = Arc<Path>, Error = FetchError> + Send> {
                         match kind {
                             ChecksumKind::Sha256 => Box::new(request.with_destination_checksum::<Sha256>(checksum)),
                             ChecksumKind::Sha1 => Box::new(request.with_destination_checksum::<Sha1>(checksum)),
@@ -469,14 +485,22 @@ impl<T: Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> ValidatedRel
                         }
                     };
 
-                    // Execute this request in the background.
-                    oneshot::spawn(
-                        fetch_request.map_err(|why| DistUpdateError::Fetcher { why }),
-                        &DefaultExecutor::current()
-                    )
+                    fetch_request
+                        .map_err(|why| DistUpdateError::Fetcher { why })
+                        .map(|_| ())
                 });
 
-            Box::new(futures::future::join_all(entries).map(|_| ()))
+            let (tx, rx) = mpsc::unbounded();
+            for future in entries {
+                let tx = tx.clone();
+                tokio::spawn(future.then(move |value| {
+                    tx.unbounded_send(value);
+                    Ok(())
+                }));
+            }
+
+            let result = rx.then(|v| v.unwrap()).for_each(|_| Ok(()));
+            Box::new(result)
         })
     }
 

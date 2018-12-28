@@ -8,9 +8,12 @@ readme = "README"
 
 [dependencies]
 apt-keyring = { git = "https://github.com/pop-os/apt-keyring" }
-apt-release-file = "0.1.0"
+# apt-release-file = "0.1.0"
+# apt-release-file = { path = "../apt-release-file" }
+apt-release-file = { git = "https://github.com/pop-os/apt-release-file" }
 apt-sources-lists = { git = "https://github.com/pop-os/apt-sources-lists" }
 async-fetcher = { git = "https://github.com/pop-os/async-fetcher" }
+# async-fetcher = { path = "../async-fetcher" }
 deb-architectures = "0.1.0"
 failure = "0.1.3"
 failure_derive = "0.1.3"
@@ -33,4 +36,3 @@ xz2 = "0.1.6"
 reqwest = "0.9.4"
 clap = "2.32.0"
 log = "0.4.6"
-
