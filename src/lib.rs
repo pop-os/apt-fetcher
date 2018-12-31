@@ -18,11 +18,10 @@ extern crate sha1;
 extern crate sha2;
 extern crate tempfile_fast;
 extern crate tokio;
+extern crate tokio_threadpool;
 extern crate xz2;
 
 mod dist;
 mod status;
-mod upgrade;
 
 pub use self::dist::*;
-pub use self::upgrade::*;

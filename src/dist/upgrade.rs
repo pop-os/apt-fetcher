@@ -1,10 +1,10 @@
 use apt_sources_lists::*;
 use dist::{REQUIRED_DIST_FILES, update::{Updater, DistUpdateError}};
-use futures::{self, Future};
+use futures::{self, Future, future::lazy};
 use keyring::AptKeyring;
 use reqwest::{self, async::{Client, Response}};
 use std::io;
-use tokio::{self, runtime::Runtime};
+use tokio;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Fail)]
@@ -40,18 +40,20 @@ impl UpgradeRequest {
     }
 
     /// Check if the upgrade request is possible, and enable upgrading if so.
-    pub fn send<'a>(self, from_suite: &'a str, to_suite: &'a str) -> Result<Upgrader<'a>, DistUpgradeError> {
+    pub fn send<S: Into<Arc<str>>>(self, from_suite: S, to_suite: S) -> Result<Upgrader, DistUpgradeError> {
+        let from_suite = from_suite.into();
+        let to_suite = to_suite.into();
+
         let result = {
-            let requests = head_all_release_files(self.client.clone(), &self.list, from_suite, to_suite);
-            let future = futures::future::join_all(requests);
+            let requests = head_all_release_files(self.client.clone(), &self.list, &from_suite, &to_suite);
+            use tokio_threadpool::ThreadPool;
 
-            let mut runtime = Runtime::new()
-                .map_err(|why| {
-                    DistUpgradeError::Tokio { what: "constructing single-threaded runtime", why }
-                })?;
+            let pool = ThreadPool::new();
+            let handle = pool.spawn_handle(
+                futures::future::join_all(requests)
+            );
 
-            runtime.block_on(future)
-                .map(|_| ())
+            handle.wait()
                 .map_err(|why| DistUpgradeError::Request { why })
         };
 
@@ -66,38 +68,39 @@ impl UpgradeRequest {
 }
 
 /// An upgrader is created from an `UpgradeRequest::send`, which ensures that the dist upgrade is possible.
-pub struct Upgrader<'a> {
+pub struct Upgrader {
     client: Arc<Client>,
     keyring: Option<Arc<AptKeyring>>,
     list: Arc<Mutex<SourcesList>>,
-    from_suite: &'a str,
-    to_suite: &'a str
+    from_suite: Arc<str>,
+    to_suite: Arc<str>
 }
 
-impl<'a> Upgrader<'a> {
+impl Upgrader {
     /// Modify the apt sources in the system, and fetch the new dist files.
     ///
     /// On failure, the upgrader is returned alongside an error indicating the cause.
     /// On success, this upgrader is consumed, as it is no longer valid.
-    pub fn dist_upgrade(mut self) -> Result<(), (Self, DistUpgradeError)> {
-        match self.overwrite_apt_sources().and_then(|_| self.update_dist_files()) {
-            Ok(()) => Ok(()),
-            Err(why) => Err((self, why))
-        }
+    pub fn dist_upgrade(mut self) -> Result<Vec<(String, Result<(), DistUpdateError>)>, (Self, DistUpgradeError)> {
+        self.overwrite_apt_sources()
+            .and_then(|_| self.update_dist_files())
+            .map_err(|why| (self, why))
     }
 
     /// Attempt to overwrite the apt sources with the new suite to upgrade to.
-    fn overwrite_apt_sources(&mut self) -> Result<(), DistUpgradeError> {
+    pub fn overwrite_apt_sources(&mut self) -> Result<(), DistUpgradeError> {
         self.list.lock().unwrap().dist_upgrade(&self.from_suite, &self.to_suite)
             .map_err(|why| DistUpgradeError::AptFileOverwrite { why })
     }
 
     /// Attempt to fetch new dist files from the new sources.
-    fn update_dist_files(&mut self) -> Result<(), DistUpgradeError> {
-        let client = self.client.clone();
+    fn update_dist_files(&mut self) -> Result<Vec<(String, Result<(), DistUpdateError>)>, DistUpgradeError> {
         let result = {
+            let client = self.client.clone();
             let list = self.list.lock().unwrap();
+
             let mut updater = Updater::new(client, &list);
+
             if let Some(ref keyring) = self.keyring {
                 updater = updater.keyring(keyring.clone());
             }
@@ -143,9 +146,17 @@ fn head_release_files(
 
     REQUIRED_DIST_FILES.iter().map(move |file| {
         let url = [url.as_str(), file].concat();
+        let client = client.clone();
 
-        client.head(&url)
-            .send()
-            .and_then(|response| response.error_for_status())
+        lazy(move || {
+            println!("HEAD {}", url);
+            client.head(&url)
+                .send()
+                .and_then(|response| response.error_for_status())
+                .then(move |v| {
+                    println!("HIT {}", url);
+                    v
+                })
+        })
     })
 }

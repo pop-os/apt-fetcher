@@ -1,14 +1,18 @@
 extern crate apt_fetcher;
 extern crate apt_keyring;
 extern crate clap;
-extern crate reqwest;
+extern crate futures;
 extern crate log;
+extern crate reqwest;
+extern crate tokio;
 
 use apt_fetcher::*;
 use apt_keyring::AptKeyring;
+use futures::future::lazy;
 use reqwest::async::Client;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::runtime::Runtime;
 
 pub fn main() {
     init_logging().unwrap();
@@ -18,9 +22,17 @@ pub fn main() {
     let client = Arc::new(Client::new());
     let keyring = Arc::new(AptKeyring::new().unwrap());
 
-    let result = Updater::new(client, &sources)
-        .keyring(keyring)
-        .tokio_update();
+    // A futures runtime is required to execute the updater.
+    let mut runtime = Runtime::new().unwrap();
+
+    // The updater must by executed on the runtime -- achieved via a lazy future.
+    let updater = lazy(move || {
+        Updater::new(client, &sources)
+            .keyring(keyring)
+            .tokio_update()
+    });
+
+    let result = runtime.block_on(updater);
 
     println!("update finished in {:?}", Instant::now() - start);
 

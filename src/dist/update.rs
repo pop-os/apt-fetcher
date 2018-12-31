@@ -15,7 +15,7 @@ use status::StatusExt;
 use std::{fs::{self as sync_fs, File as SyncFile}, sync::Arc, path::{Path, PathBuf}};
 use std::io::{self, BufReader, Error as IoError};
 use std::process::Command;
-use tokio::{self, executor::DefaultExecutor, runtime::Runtime};
+use tokio::{self, executor::{DefaultExecutor, Executor}, runtime::Runtime};
 use xz2::write::XzDecoder;
 
 pub type Url = Arc<str>;
@@ -63,6 +63,10 @@ pub enum DistUpdateError {
     Decompressor { why: io::Error },
     #[fail(display = "failed to fetch file: {}", why)]
     Fetcher { why: FetchError },
+    #[fail(display = "failed to fetch updates")]
+    FetchUpdates,
+    #[fail(display = "failed to fetch distribution file(s)")]
+    DistFetch
 }
 
 pub struct Updater<'a> {
@@ -90,15 +94,10 @@ impl<'a> Updater<'a> {
     }
 
     /// Experimental apt update replacement.
-    pub fn tokio_update(&self) -> Result<(), DistUpdateError> {
+    pub fn tokio_update(&self) -> Result<Vec<(String, Result<(), DistUpdateError>)>, DistUpdateError> {
         let architectures = supported_architectures()
             .map(Arc::new)
             .map_err(|why| DistUpdateError::Architectures { why })?;
-
-        let mut runtime = Runtime::new()
-            .map_err(|why| {
-                DistUpdateError::Tokio { what: "constructing runtime", why }
-            })?;
 
         if ! Path::new(PARTIAL).exists() {
             let _ = sync_fs::create_dir_all(PARTIAL);
@@ -112,14 +111,21 @@ impl<'a> Updater<'a> {
             requests = requests.with_keyring(keyring.clone());
         }
 
-        let release_files = requests.fetch_updates(&self.sources_list, architectures)
-            .collect();
+        use tokio_threadpool::ThreadPool;
 
-        let release_file_results = runtime.block_on(release_files);
+        let pool = ThreadPool::new();
+        let handle = pool.spawn_handle(
+            requests
+                .fetch_updates(&self.sources_list, architectures)
+                .collect()
+        );
 
-        eprintln!("results: {:?}", release_file_results);
-
-        Ok(())
+        handle.wait()
+            .map_err(|_| DistUpdateError::FetchUpdates)
+            .and_then(|results| {
+                let errored = results.iter().any(|(_, result)| result.is_err());
+                if errored { Ok(results) } else { Err(DistUpdateError::DistFetch) }
+            })
     }
 }
 
@@ -139,7 +145,7 @@ impl ReleaseFetcher {
     }
 
     pub fn fetch_updates(self, list: &SourcesList, archs: Arc<Vec<Architecture>>)
-        -> impl Stream<Item = Result<(), DistUpdateError>, Error = ()>
+        -> impl Stream<Item = (String, Result<(), DistUpdateError>), Error = ()>
     {
         let to_fetch = list.dist_paths()
             // Fetch the information we need to create our requests for the release files.
@@ -196,6 +202,8 @@ impl ReleaseFetcher {
                     .map_err(|why| DistUpdateError::Fetcher { why })
             };
 
+            let dist_path = request.dist_path.clone();
+
             let future = future.map(|_| ReleaseData {
                 trusted: request.trusted,
                 path: dest,
@@ -207,24 +215,12 @@ impl ReleaseFetcher {
                 .validate_releases()
                 .fetch_entries(client.clone(), archs.clone())
                 .map(|_| ())
-                .then(Ok)
+                .then(move |v| Ok((dist_path, v)))
         });
 
-        let future = lazy(move || {
-            let (tx, rx) = mpsc::unbounded();
-            for future in iterator {
-                let tx = tx.clone();
-
-                tokio::spawn(future.then(move |v| {
-                    tx.unbounded_send(v);
-                    Ok(())
-                }));
-            }
-
-            Ok(rx.then(|v| v.unwrap()))
-        });
-
-        future.flatten_stream()
+        futures_unordered(iterator)
+            .then(Ok)
+            .buffer_unordered(8)
     }
 }
 
@@ -490,16 +486,11 @@ impl<T: Future<Item = ReleaseInfo, Error = DistUpdateError> + Send> ValidatedRel
                         .map(|_| ())
                 });
 
-            let (tx, rx) = mpsc::unbounded();
-            for future in entries {
-                let tx = tx.clone();
-                tokio::spawn(future.then(move |value| {
-                    tx.unbounded_send(value);
-                    Ok(())
-                }));
-            }
+            let result = futures_unordered(entries)
+                .then(Ok)
+                .buffer_unordered(8)
+                .for_each(|_| Ok(()));
 
-            let result = rx.then(|v| v.unwrap()).for_each(|_| Ok(()));
             Box::new(result)
         })
     }
