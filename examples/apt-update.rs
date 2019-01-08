@@ -5,14 +5,15 @@ extern crate futures;
 extern crate log;
 extern crate reqwest;
 extern crate tokio;
+extern crate tokio_threadpool;
 
 use apt_fetcher::*;
 use apt_keyring::AptKeyring;
-use futures::future::lazy;
+use futures::{lazy, Future};
 use reqwest::async::Client;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::runtime::Runtime;
+use tokio_threadpool::ThreadPool;
 
 pub fn main() {
     init_logging().unwrap();
@@ -23,7 +24,7 @@ pub fn main() {
     let keyring = Arc::new(AptKeyring::new().unwrap());
 
     // A futures runtime is required to execute the updater.
-    let mut runtime = Runtime::new().unwrap();
+    let pool = ThreadPool::new();
 
     // The updater must by executed on the runtime -- achieved via a lazy future.
     let updater = lazy(move || {
@@ -32,7 +33,7 @@ pub fn main() {
             .tokio_update()
     });
 
-    let result = runtime.block_on(updater);
+    let result = pool.spawn_handle(updater).wait();
 
     println!("update finished in {:?}", Instant::now() - start);
 

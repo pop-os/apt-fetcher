@@ -3,8 +3,7 @@ use apt_sources_lists::*;
 use async_fetcher::{AsyncFetcher, CompletedState, FetchError, FetchEvent};
 use deb_architectures::{Architecture, supported_architectures};
 use flate2::write::GzDecoder;
-use futures::{self, IntoFuture, Future, Stream, future::{lazy, join_all}, sync::{mpsc, oneshot}};
-use futures::stream::futures_unordered;
+use futures::{self, stream::futures_unordered, IntoFuture, Future, Stream};
 use gpgrv::verify_clearsign_armour;
 use keyring::AptKeyring;
 use md5::Md5;
@@ -15,7 +14,7 @@ use status::StatusExt;
 use std::{fs::{self as sync_fs, File as SyncFile}, sync::Arc, path::{Path, PathBuf}};
 use std::io::{self, BufReader, Error as IoError};
 use std::process::Command;
-use tokio::{self, executor::{DefaultExecutor, Executor}, runtime::Runtime};
+use tokio;
 use xz2::write::XzDecoder;
 
 pub type Url = Arc<str>;
@@ -123,7 +122,14 @@ impl<'a> Updater<'a> {
         handle.wait()
             .map_err(|_| DistUpdateError::FetchUpdates)
             .and_then(|results| {
-                let errored = results.iter().any(|(_, result)| result.is_err());
+                let mut errored = false;
+                for (task, result) in &results {
+                    if let Err(why) = result {
+                        eprintln!("ERR {}: {}", task, why);
+                        errored = true;
+                    }
+                }
+
                 if errored { Ok(results) } else { Err(DistUpdateError::DistFetch) }
             })
     }

@@ -5,7 +5,7 @@ use keyring::AptKeyring;
 use reqwest::{self, async::{Client, Response}};
 use std::io;
 use tokio;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[derive(Debug, Fail)]
 pub enum DistUpgradeError {
@@ -24,13 +24,13 @@ pub enum DistUpgradeError {
 /// Build an upgrade request, and check if the upgrade is possible.
 pub struct UpgradeRequest {
     client: Arc<Client>,
-    list: Arc<Mutex<SourcesList>>,
+    list: SourcesList,
     keyring: Option<Arc<AptKeyring>>,
 }
 
 impl UpgradeRequest {
     /// Constructs a new upgrade request from a given async client and apt sources list.
-    pub fn new(client: Arc<Client>, list: Arc<Mutex<SourcesList>>) -> Self {
+    pub fn new(client: Arc<Client>, list: SourcesList) -> Self {
         Self { client, keyring: None, list }
     }
 
@@ -71,9 +71,10 @@ impl UpgradeRequest {
 pub struct Upgrader {
     client: Arc<Client>,
     keyring: Option<Arc<AptKeyring>>,
-    list: Arc<Mutex<SourcesList>>,
+    list: SourcesList,
     from_suite: Arc<str>,
-    to_suite: Arc<str>
+    to_suite: Arc<str>,
+
 }
 
 impl Upgrader {
@@ -89,7 +90,7 @@ impl Upgrader {
 
     /// Attempt to overwrite the apt sources with the new suite to upgrade to.
     pub fn overwrite_apt_sources(&mut self) -> Result<(), DistUpgradeError> {
-        self.list.lock().unwrap().dist_upgrade(&self.from_suite, &self.to_suite)
+        self.list.dist_upgrade(&self.from_suite, &self.to_suite)
             .map_err(|why| DistUpgradeError::AptFileOverwrite { why })
     }
 
@@ -97,9 +98,8 @@ impl Upgrader {
     fn update_dist_files(&mut self) -> Result<Vec<(String, Result<(), DistUpdateError>)>, DistUpgradeError> {
         let result = {
             let client = self.client.clone();
-            let list = self.list.lock().unwrap();
 
-            let mut updater = Updater::new(client, &list);
+            let mut updater = Updater::new(client, &self.list);
 
             if let Some(ref keyring) = self.keyring {
                 updater = updater.keyring(keyring.clone());
@@ -120,16 +120,12 @@ impl Upgrader {
 /// Construct an iterator of futures for fetching each dist release file of each source.
 fn head_all_release_files(
     client: Arc<Client>,
-    list: &Arc<Mutex<SourcesList>>,
+    list: &SourcesList,
     from_suite: &str,
     to_suite: &str,
 ) -> impl Iterator<Item = impl Future<Item = Response, Error = reqwest::Error>> {
-    let urls = {
-        let lock = list.lock().unwrap();
-        let vector = lock.dist_upgrade_paths(from_suite, to_suite).collect::<Vec<String>>();
-        drop(lock);
-        vector
-    };
+    let urls = list.dist_upgrade_paths(from_suite, to_suite)
+        .collect::<Vec<String>>();
 
     urls.into_iter()
         .flat_map(move |url| head_release_files(client.clone(), url))
