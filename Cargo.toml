@@ -15,7 +15,7 @@ apt-sources-lists = { git = "https://github.com/pop-os/apt-sources-lists" }
 async-fetcher = { git = "https://github.com/pop-os/async-fetcher" }
 # async-fetcher = { path = "../async-fetcher" }
 deb-architectures = "0.1.0"
-failure = "0.1.3"
+failure = "0.1.5"
 failure_derive = "0.1.3"
 filetime = "0.2.4"
 flate2 = "1.0.5"
@@ -32,6 +32,7 @@ tempfile-fast = "0.2.3"
 tokio = "0.1.11"
 xz2 = "0.1.6"
 tokio-threadpool = "0.1.9"
+err-derive = "0.1.5"
 
 [dev-dependencies]
 reqwest = "0.9.4"

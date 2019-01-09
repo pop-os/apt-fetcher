@@ -7,17 +7,17 @@ use std::io;
 use tokio;
 use std::sync::Arc;
 
-#[derive(Debug, Fail)]
+#[derive(Debug, Error)]
 pub enum DistUpgradeError {
-    #[fail(display = "tokio error: failure {}: {}", what, why)]
+    #[error(display = "tokio error: failure {}: {}", what, why)]
     Tokio { what: &'static str, why: tokio::io::Error },
-    #[fail(display = "http/s request failed: {}", why)]
+    #[error(display = "http/s request failed: {}", why)]
     Request { why: reqwest::Error },
-    #[fail(display = "failed to overwrite apt source files: {}", why)]
+    #[error(display = "failed to overwrite apt source files: {}", why)]
     AptFileOverwrite { why: io::Error },
-    #[fail(display = "failed to fetch apt sources: {}", why)]
+    #[error(display = "failed to fetch apt sources: {}", why)]
     AptFileUpdate { why: DistUpdateError },
-    #[fail(display = "failed to fetch apt sources[0] and restore apt files[1]: \n\t[0] {}\n\t[1] {}", why, file_why)]
+    #[error(display = "failed to fetch apt sources[0] and restore apt files[1]: \n\t[0] {}\n\t[1] {}", why, file_why)]
     AptFileUpdateRestore { why: DistUpdateError, file_why: Box<DistUpgradeError> },
 }
 
@@ -91,6 +91,12 @@ impl Upgrader {
     /// Attempt to overwrite the apt sources with the new suite to upgrade to.
     pub fn overwrite_apt_sources(&mut self) -> Result<(), DistUpgradeError> {
         self.list.dist_upgrade(&self.from_suite, &self.to_suite)
+            .map_err(|why| DistUpgradeError::AptFileOverwrite { why })
+    }
+
+    /// Performs the reverse of the overwrite method.
+    pub fn revert_apt_sources(&mut self) -> Result<(), DistUpgradeError> {
+        self.list.dist_upgrade(&self.to_suite, &self.from_suite)
             .map_err(|why| DistUpgradeError::AptFileOverwrite { why })
     }
 

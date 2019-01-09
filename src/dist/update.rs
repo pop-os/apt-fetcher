@@ -2,6 +2,7 @@ use apt_release_file::*;
 use apt_sources_lists::*;
 use async_fetcher::{AsyncFetcher, CompletedState, FetchError, FetchEvent};
 use deb_architectures::{Architecture, supported_architectures};
+use failure;
 use flate2::write::GzDecoder;
 use futures::{self, stream::futures_unordered, IntoFuture, Future, Stream};
 use gpgrv::verify_clearsign_armour;
@@ -36,35 +37,35 @@ const CHECKSUM_PRIORITY: &[(&str, ChecksumKind)] = &[
     ("MD5Sum", ChecksumKind::Md5)
 ];
 
-#[derive(Debug, Fail)]
+#[derive(Debug, Error)]
 pub enum DistUpdateError {
-    #[fail(display = "tokio error: failure {}: {}", what, why)]
+    #[error(display = "tokio error: failure {}: {}", what, why)]
     Tokio { what: &'static str, why: tokio::io::Error },
-    #[fail(display = "http/s request failed: {}", why)]
+    #[error(display = "http/s request failed: {}", why)]
     Request { why: reqwest::Error },
-    #[fail(display = "failed to exec 'apt update': {}", why)]
+    #[error(display = "failed to exec 'apt update': {}", why)]
     AptUpdate { why: io::Error },
-    #[fail(display = "decoder error: {}", why)]
+    #[error(display = "decoder error: {}", why)]
     Decoder { why: io::Error },
-    #[fail(display = "failed to validate GPG signature: {}", why)]
+    #[error(display = "failed to validate GPG signature: {}", why)]
     GpgValidation { why: ::failure::Error },
-    #[fail(display = "failed to read local apt repo: {}", why)]
+    #[error(display = "failed to read local apt repo: {}", why)]
     LocalRepo { why: IoError },
-    #[fail(display = "release file had invalid UTF-8")]
+    #[error(display = "release file had invalid UTF-8")]
     InvalidUtf8,
-    #[fail(display = "invalid release data: {}", why)]
+    #[error(display = "invalid release data: {}", why)]
     InvalidReleaseData { why: io::Error },
-    #[fail(display = "no entries were found for the repository at {}", repo)]
+    #[error(display = "no entries were found for the repository at {}", repo)]
     NoEntriesFound { repo: Url },
-    #[fail(display = "failed to fetch available architectures: {}", why)]
+    #[error(display = "failed to fetch available architectures: {}", why)]
     Architectures { why: io::Error },
-    #[fail(display = "failed to initialize decompressor: {}", why)]
+    #[error(display = "failed to initialize decompressor: {}", why)]
     Decompressor { why: io::Error },
-    #[fail(display = "failed to fetch file: {}", why)]
+    #[error(display = "failed to fetch file: {}", why)]
     Fetcher { why: FetchError },
-    #[fail(display = "failed to fetch updates")]
+    #[error(display = "failed to fetch updates")]
     FetchUpdates,
-    #[fail(display = "failed to fetch distribution file(s)")]
+    #[error(display = "failed to fetch distribution file(s)")]
     DistFetch
 }
 

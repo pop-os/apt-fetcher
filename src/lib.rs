@@ -1,4 +1,4 @@
-#[macro_use] extern crate failure_derive;
+#[macro_use] extern crate err_derive;
 #[macro_use] extern crate log;
 
 extern crate apt_keyring as keyring;
@@ -21,6 +21,8 @@ extern crate tokio;
 extern crate tokio_threadpool;
 extern crate xz2;
 
+pub mod apt_uris;
+mod command;
 mod dist;
 mod status;
 
