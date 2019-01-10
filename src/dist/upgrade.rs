@@ -7,6 +7,8 @@ use std::io;
 use tokio;
 use std::sync::Arc;
 
+use tokio::runtime::Runtime;
+
 #[derive(Debug, Error)]
 pub enum DistUpgradeError {
     #[error(display = "tokio error: failure {}: {}", what, why)]
@@ -22,16 +24,17 @@ pub enum DistUpgradeError {
 }
 
 /// Build an upgrade request, and check if the upgrade is possible.
-pub struct UpgradeRequest {
+pub struct UpgradeRequest<'a> {
     client: Arc<Client>,
     list: SourcesList,
     keyring: Option<Arc<AptKeyring>>,
+    runtime: &'a mut Runtime
 }
 
-impl UpgradeRequest {
+impl<'a> UpgradeRequest<'a> {
     /// Constructs a new upgrade request from a given async client and apt sources list.
-    pub fn new(client: Arc<Client>, list: SourcesList) -> Self {
-        Self { client, keyring: None, list }
+    pub fn new(client: Arc<Client>, list: SourcesList, runtime: &'a mut Runtime) -> Self {
+        Self { client, keyring: None, list, runtime }
     }
 
     pub fn keyring(mut self, keyring: Arc<AptKeyring>) -> Self {
@@ -46,14 +49,7 @@ impl UpgradeRequest {
 
         let result = {
             let requests = head_all_release_files(self.client.clone(), &self.list, &from_suite, &to_suite);
-            use tokio_threadpool::ThreadPool;
-
-            let pool = ThreadPool::new();
-            let handle = pool.spawn_handle(
-                futures::future::join_all(requests)
-            );
-
-            handle.wait()
+            self.runtime.block_on(futures::future::join_all(requests))
                 .map_err(|why| DistUpgradeError::Request { why })
         };
 
@@ -74,7 +70,6 @@ pub struct Upgrader {
     list: SourcesList,
     from_suite: Arc<str>,
     to_suite: Arc<str>,
-
 }
 
 impl Upgrader {
