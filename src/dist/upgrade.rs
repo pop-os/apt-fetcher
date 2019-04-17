@@ -2,9 +2,9 @@ use apt_sources_lists::*;
 use dist::{REQUIRED_DIST_FILES, update::{Updater, DistUpdateError}};
 use futures::{self, Future, future::lazy};
 use keyring::AptKeyring;
-use reqwest::{self, async::{Client, Response}};
+use reqwest::{self, async::Client};
 use std::io;
-use tokio;
+use tokio::{self, prelude::future::*};
 use std::sync::Arc;
 
 use tokio::runtime::Runtime;
@@ -13,6 +13,8 @@ use tokio::runtime::Runtime;
 pub enum DistUpgradeError {
     #[error(display = "tokio error: failure {}: {}", what, why)]
     Tokio { what: &'static str, why: tokio::io::Error },
+    #[error(display = "some apt sources could not be reached")]
+    SourcesUnavailable { success: Vec<String>, failure: Vec<(String, reqwest::Error)> },
     #[error(display = "http/s request failed: {}", why)]
     Request { why: reqwest::Error },
     #[error(display = "failed to overwrite apt source files: {}", why)]
@@ -47,13 +49,43 @@ impl<'a> UpgradeRequest<'a> {
         let from_suite = from_suite.into();
         let to_suite = to_suite.into();
 
-        let result = {
+        let results = {
             let requests = head_all_release_files(self.client.clone(), &self.list, &from_suite, &to_suite);
             self.runtime.block_on(futures::future::join_all(requests))
-                .map_err(|why| DistUpgradeError::Request { why })
+                .expect("errors not permitted to be returned")
         };
 
-        result.map(move |_| Upgrader {
+        if results.iter().any(|e| e.1.is_err()) {
+            let (success, failure): (Vec<String>, Vec<(String, reqwest::Error)>) = results.into_iter()
+                .fold((Vec::new(), Vec::new()), |(mut succ, mut fail), (entry, result)| {
+                    // If not already a recorded failure
+                    if !fail.iter().any(|&(ref url, _)| url == &entry.url) {
+                        let succ_pos = succ.iter().position(|e| e == &entry.url);
+
+                        match result {
+                            // Add to success if a prior success is not recorded.
+                            Ok(()) => if succ_pos.is_none() {
+                                succ.push(entry.url);
+                            }
+                            // Add to failure if it's an error.
+                            Err(why) => {
+                                // Remove it from the success vec if it was previously successful.
+                                if let Some(pos) = succ_pos {
+                                    succ.swap_remove(pos);
+                                }
+
+                                fail.push((entry.url, why));
+                            }
+                        }
+                    }
+
+                    (succ, fail)
+                });
+
+            return Err(DistUpgradeError::SourcesUnavailable { success, failure });
+        }
+
+        Ok(Upgrader {
             client: self.client,
             keyring: self.keyring,
             list: self.list,
@@ -119,41 +151,54 @@ impl Upgrader {
 }
 
 /// Construct an iterator of futures for fetching each dist release file of each source.
-fn head_all_release_files(
+fn head_all_release_files<'a>(
     client: Arc<Client>,
     list: &SourcesList,
     from_suite: &str,
     to_suite: &str,
-) -> impl Iterator<Item = impl Future<Item = Response, Error = reqwest::Error>> {
-    let urls = list.dist_upgrade_paths(from_suite, to_suite)
-        .collect::<Vec<String>>();
+) -> impl Iterator<Item = impl Future<Item = (SourceEntry, Result<(), reqwest::Error>), Error = ()>> {
+    let urls = list.dist_paths()
+        .filter(|entry| entry.url.starts_with("http") && entry.suite.starts_with(from_suite))
+        .map(|file| {
+            let mut file = file.clone();
+            file.suite = file.suite.replace(from_suite, to_suite);
+            file
+        })
+        .collect::<Vec<SourceEntry>>();
 
     urls.into_iter()
-        .flat_map(move |url| head_release_files(client.clone(), url))
+        .map(move |mut file| {
+            head_release_files(client.clone(), file)
+        })
 }
 
 /// Construct an iterator of futures for fetching each dist release file.
 fn head_release_files(
     client: Arc<Client>,
-    mut url: String
-) -> impl Iterator<Item = impl Future<Item = Response, Error = reqwest::Error>> {
+    entry: SourceEntry,
+) -> impl Future<Item = (SourceEntry, Result<(), reqwest::Error>), Error = ()> {
+    let mut url = entry.dist_path();
     if ! url.ends_with('/') {
         url.push('/')
     }
 
-    REQUIRED_DIST_FILES.iter().map(move |file| {
-        let url = [url.as_str(), file].concat();
+    let futures = REQUIRED_DIST_FILES.iter().map(move |file| {
+        let file = [url.as_str(), file].concat();
         let client = client.clone();
 
         lazy(move || {
-            println!("HEAD {}", url);
-            client.head(&url)
+            println!("HEAD {}", file);
+            client.head(&file)
                 .send()
                 .and_then(|response| response.error_for_status())
                 .then(move |v| {
-                    println!("HIT {}", url);
+                    println!("HIT {}", file);
                     v
                 })
         })
-    })
+    });
+
+    join_all(futures).then(move |results| lazy(move || {
+        Ok((entry, results.map(|_| ())))
+    }))
 }
