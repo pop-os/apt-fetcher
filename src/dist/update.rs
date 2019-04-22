@@ -71,12 +71,12 @@ pub enum DistUpdateError {
 
 pub struct Updater<'a> {
     client: Arc<Client>,
-    sources_list: &'a SourcesList,
+    sources_list: &'a SourcesLists,
     keyring: Option<Arc<AptKeyring>>,
 }
 
 impl<'a> Updater<'a> {
-    pub fn new(client: Arc<Client>, sources_list: &'a SourcesList) -> Self {
+    pub fn new(client: Arc<Client>, sources_list: &'a SourcesLists) -> Self {
         Self { client, keyring: None, sources_list }
     }
 
@@ -151,10 +151,11 @@ impl ReleaseFetcher {
         self
     }
 
-    pub fn fetch_updates(self, list: &SourcesList, archs: Arc<Vec<Architecture>>)
+    pub fn fetch_updates(self, list: &SourcesLists, archs: Arc<Vec<Architecture>>)
         -> impl Stream<Item = (String, Result<(), DistUpdateError>), Error = ()>
     {
-        let to_fetch = list.dist_paths()
+        let to_fetch = list.entries()
+            .filter(|e| e.enabled)
             // Fetch the information we need to create our requests for the release files.
             .filter_map(move |source_entry| {
                 if source_entry.source {

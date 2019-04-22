@@ -28,14 +28,14 @@ pub enum DistUpgradeError {
 /// Build an upgrade request, and check if the upgrade is possible.
 pub struct UpgradeRequest<'a> {
     client: Arc<Client>,
-    list: SourcesList,
+    list: SourcesLists,
     keyring: Option<Arc<AptKeyring>>,
     runtime: &'a mut Runtime
 }
 
 impl<'a> UpgradeRequest<'a> {
     /// Constructs a new upgrade request from a given async client and apt sources list.
-    pub fn new(client: Arc<Client>, list: SourcesList, runtime: &'a mut Runtime) -> Self {
+    pub fn new(client: Arc<Client>, list: SourcesLists, runtime: &'a mut Runtime) -> Self {
         Self { client, keyring: None, list, runtime }
     }
 
@@ -99,7 +99,7 @@ impl<'a> UpgradeRequest<'a> {
 pub struct Upgrader {
     client: Arc<Client>,
     keyring: Option<Arc<AptKeyring>>,
-    list: SourcesList,
+    list: SourcesLists,
     from_suite: Arc<str>,
     to_suite: Arc<str>,
 }
@@ -153,11 +153,12 @@ impl Upgrader {
 /// Construct an iterator of futures for fetching each dist release file of each source.
 fn head_all_release_files<'a>(
     client: Arc<Client>,
-    list: &SourcesList,
+    list: &SourcesLists,
     from_suite: &str,
     to_suite: &str,
 ) -> impl Iterator<Item = impl Future<Item = (SourceEntry, Result<(), reqwest::Error>), Error = ()>> {
-    let urls = list.dist_paths()
+    let urls = list.entries()
+        .filter(|entry| entry.enabled)
         .filter(|entry| entry.url.starts_with("http") && entry.suite.starts_with(from_suite))
         .map(|file| {
             let mut file = file.clone();

@@ -19,7 +19,7 @@ pub fn main() {
     init_logging().unwrap();
 
     let start = Instant::now();
-    let sources = SourcesList::scan().unwrap();
+    let sources = SourcesLists::scan().unwrap();
     let client = Arc::new(Client::new());
     let keyring = Arc::new(AptKeyring::new().unwrap());
 
