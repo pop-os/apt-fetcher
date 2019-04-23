@@ -45,7 +45,7 @@ impl<'a> UpgradeRequest<'a> {
     }
 
     /// Check if the upgrade request is possible, and enable upgrading if so.
-    pub fn send<S: Into<Arc<str>>>(self, retain: &'a HashSet<Box<str>>, from_suite: S, to_suite: S) -> Result<Upgrader<'a>, DistUpgradeError> {
+    pub fn send<'b, S: Into<Arc<str>>>(self, retain: &'b HashSet<Box<str>>, from_suite: S, to_suite: S) -> Result<Upgrader<'b>, DistUpgradeError> {
         let from_suite = from_suite.into();
         let to_suite = to_suite.into();
 
