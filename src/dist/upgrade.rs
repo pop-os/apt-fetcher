@@ -2,8 +2,8 @@ use apt_sources_lists::*;
 use dist::{REQUIRED_DIST_FILES, update::{Updater, DistUpdateError}};
 use futures::{self, Future, future::lazy};
 use keyring::AptKeyring;
-use reqwest::{self, async::Client};
-use std::io;
+use reqwest::{self, async::{Client, Response}};
+use std::{collections::HashSet, io};
 use tokio::{self, prelude::future::*};
 use std::sync::Arc;
 
@@ -45,12 +45,12 @@ impl<'a> UpgradeRequest<'a> {
     }
 
     /// Check if the upgrade request is possible, and enable upgrading if so.
-    pub fn send<S: Into<Arc<str>>>(self, from_suite: S, to_suite: S) -> Result<Upgrader, DistUpgradeError> {
+    pub fn send<S: Into<Arc<str>>>(self, retain: &'a HashSet<Box<str>>, from_suite: S, to_suite: S) -> Result<Upgrader<'a>, DistUpgradeError> {
         let from_suite = from_suite.into();
         let to_suite = to_suite.into();
 
         let results = {
-            let requests = head_all_release_files(self.client.clone(), &self.list, &from_suite, &to_suite);
+            let requests = head_all_release_files(self.client.clone(), &self.list, &from_suite, &to_suite, retain);
             self.runtime.block_on(futures::future::join_all(requests))
                 .expect("errors not permitted to be returned")
         };
@@ -90,21 +90,23 @@ impl<'a> UpgradeRequest<'a> {
             keyring: self.keyring,
             list: self.list,
             from_suite,
-            to_suite
+            to_suite,
+            retain
         })
     }
 }
 
 /// An upgrader is created from an `UpgradeRequest::send`, which ensures that the dist upgrade is possible.
-pub struct Upgrader {
+pub struct Upgrader<'a> {
     client: Arc<Client>,
     keyring: Option<Arc<AptKeyring>>,
     list: SourcesLists,
     from_suite: Arc<str>,
     to_suite: Arc<str>,
+    retain: &'a HashSet<Box<str>>
 }
 
-impl Upgrader {
+impl<'a> Upgrader<'a> {
     /// Modify the apt sources in the system, and fetch the new dist files.
     ///
     /// On failure, the upgrader is returned alongside an error indicating the cause.
@@ -117,13 +119,13 @@ impl Upgrader {
 
     /// Attempt to overwrite the apt sources with the new suite to upgrade to.
     pub fn overwrite_apt_sources(&mut self) -> Result<(), DistUpgradeError> {
-        self.list.dist_upgrade(&self.from_suite, &self.to_suite)
+        self.list.dist_upgrade(&self.retain, &self.from_suite, &self.to_suite)
             .map_err(|why| DistUpgradeError::AptFileOverwrite { why })
     }
 
     /// Performs the reverse of the overwrite method.
     pub fn revert_apt_sources(&mut self) -> Result<(), DistUpgradeError> {
-        self.list.dist_upgrade(&self.to_suite, &self.from_suite)
+        self.list.dist_upgrade(&self.retain, &self.to_suite, &self.from_suite)
             .map_err(|why| DistUpgradeError::AptFileOverwrite { why })
     }
 
@@ -151,26 +153,28 @@ impl Upgrader {
 }
 
 /// Construct an iterator of futures for fetching each dist release file of each source.
-fn head_all_release_files<'a>(
+fn head_all_release_files(
     client: Arc<Client>,
     list: &SourcesLists,
     from_suite: &str,
     to_suite: &str,
+    retain: &HashSet<Box<str>>
 ) -> impl Iterator<Item = impl Future<Item = (SourceEntry, Result<(), reqwest::Error>), Error = ()>> {
     let urls = list.entries()
         .filter(|entry| entry.enabled)
         .filter(|entry| entry.url.starts_with("http") && entry.suite.starts_with(from_suite))
         .map(|file| {
             let mut file = file.clone();
-            file.suite = file.suite.replace(from_suite, to_suite);
+            if !retain.contains(file.url.as_str()) {
+                file.suite = file.suite.replace(from_suite, to_suite);
+            }
+
             file
         })
         .collect::<Vec<SourceEntry>>();
 
     urls.into_iter()
-        .map(move |mut file| {
-            head_release_files(client.clone(), file)
-        })
+        .map(move |file| head_release_files(client.clone(), file))
 }
 
 /// Construct an iterator of futures for fetching each dist release file.
@@ -191,7 +195,7 @@ fn head_release_files(
             println!("HEAD {}", file);
             client.head(&file)
                 .send()
-                .and_then(|response| response.error_for_status())
+                .and_then(Response::error_for_status)
                 .then(move |v| {
                     println!("HIT {}", file);
                     v
