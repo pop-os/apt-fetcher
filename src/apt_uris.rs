@@ -59,7 +59,7 @@ pub struct AptUri {
 }
 
 impl AptUri {
-    pub fn fetch(self, client: &Client) -> impl Future<Item = Self, Error = FetchError> {
+    pub fn fetch(self, client: &Client) -> impl Future<Item = Self, Error = (Self, FetchError)> {
         const ARCHIVES: &str = "/var/cache/apt/archives/";
         const PARTIAL: &str = "/var/cache/apt/archives/partial/";
 
@@ -80,7 +80,10 @@ impl AptUri {
             .then_download(part)
             .then_rename()
             .into_future()
-            .map(move |_| self)
+            .then(move |event| match event {
+                Ok(_) => Ok(self),
+                Err(why) => Err((self, why))
+            })
     }
 }
 
