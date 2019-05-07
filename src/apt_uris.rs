@@ -1,12 +1,13 @@
 use async_fetcher::{AsyncFetcher, FetchError, FetchEvent};
 use command::Command;
+use futures::{Future, IntoFuture};
+use md5::Md5;
 use reqwest::r#async::Client;
+use std::hash::{Hash, Hasher};
 use std::io;
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::path::Path;
-use md5::Md5;
-use futures::{Future, IntoFuture};
 
 /// Fetch a vector of APT URIs required for the given `apt-get` operation.
 pub fn apt_uris(args: &[&str]) -> Result<Vec<AptUri>, AptUriError> {
@@ -20,7 +21,7 @@ pub fn apt_uris(args: &[&str]) -> Result<Vec<AptUri>, AptUriError> {
     let mut packages = Vec::new();
     for line in output.lines() {
         if !line.starts_with('\'') {
-            continue
+            continue;
         }
 
         packages.push(line.parse::<AptUri>()?);
@@ -46,15 +47,15 @@ pub enum AptUriError {
     #[error(display = "md5sum not found in output: {}", _0)]
     Md5NotFound(String),
     #[error(display = "md5 prefix (MD5Sum:) not found in md5sum: {}", _0)]
-    Md5Prefix(String)
+    Md5Prefix(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq)]
 pub struct AptUri {
     pub uri: String,
     pub name: String,
     pub size: u64,
-    pub md5sum: String
+    pub md5sum: String,
 }
 
 impl AptUri {
@@ -70,9 +71,10 @@ impl AptUri {
         AsyncFetcher::new(client, self.uri.clone())
             .with_progress_callback(move |event| match event {
                 FetchEvent::Get => println!("Getting {}", name),
-                FetchEvent::DownloadComplete
-                    | FetchEvent::AlreadyFetched => println!("Finished {}", name),
-                _ => ()
+                FetchEvent::DownloadComplete | FetchEvent::AlreadyFetched => {
+                    println!("Finished {}", name)
+                }
+                _ => (),
             })
             .request_to_path_with_checksum::<Md5>(dest, &self.md5sum.clone())
             .then_download(part)
@@ -82,25 +84,47 @@ impl AptUri {
     }
 }
 
+impl PartialEq for AptUri {
+    fn eq(&self, other: &Self) -> bool {
+        self.uri == other.uri
+    }
+}
+
+impl Hash for AptUri {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.uri.hash(state);
+    }
+}
+
 impl FromStr for AptUri {
     type Err = AptUriError;
 
     fn from_str(line: &str) -> Result<Self, Self::Err> {
         let mut words = line.split_whitespace();
 
-        let mut uri = words.next().ok_or_else(|| AptUriError::UriNotFound(line.into()))?;
+        let mut uri = words
+            .next()
+            .ok_or_else(|| AptUriError::UriNotFound(line.into()))?;
 
         // We need to remove the single quotes that apt-get encloses the URI within.
         if uri.len() <= 3 {
-            return Err(AptUriError::UriInvalid(uri.into()))
+            return Err(AptUriError::UriInvalid(uri.into()));
         } else {
             uri = &uri[1..uri.len() - 1];
         }
 
-        let name = words.next().ok_or_else(|| AptUriError::NameNotFound(line.into()))?;
-        let size = words.next().ok_or_else(|| AptUriError::SizeNotFound(line.into()))?;
-        let size = size.parse::<u64>().map_err(|_| AptUriError::SizeParse(size.into()))?;
-        let mut md5sum = words.next().ok_or_else(|| AptUriError::Md5NotFound(line.into()))?;
+        let name = words
+            .next()
+            .ok_or_else(|| AptUriError::NameNotFound(line.into()))?;
+        let size = words
+            .next()
+            .ok_or_else(|| AptUriError::SizeNotFound(line.into()))?;
+        let size = size
+            .parse::<u64>()
+            .map_err(|_| AptUriError::SizeParse(size.into()))?;
+        let mut md5sum = words
+            .next()
+            .ok_or_else(|| AptUriError::Md5NotFound(line.into()))?;
 
         if md5sum.starts_with("MD5Sum:") {
             md5sum = &md5sum[7..];
@@ -108,6 +132,11 @@ impl FromStr for AptUri {
             return Err(AptUriError::Md5Prefix(md5sum.into()));
         }
 
-        Ok(AptUri { uri: uri.into(), name: name.into(), size, md5sum: md5sum.into() })
+        Ok(AptUri {
+            uri: uri.into(),
+            name: name.into(),
+            size,
+            md5sum: md5sum.into(),
+        })
     }
 }
