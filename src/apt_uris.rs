@@ -3,6 +3,7 @@ use command::Command;
 use futures::{Future, IntoFuture};
 use md5::Md5;
 use reqwest::r#async::Client;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::Path;
@@ -10,7 +11,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 /// Fetch a vector of APT URIs required for the given `apt-get` operation.
-pub fn apt_uris(args: &[&str]) -> Result<Vec<AptUri>, AptUriError> {
+pub fn apt_uris(args: &[&str]) -> Result<HashSet<AptUri>, AptUriError> {
     let output = Command::new("apt-get")
         .env("DEBIAN_FRONTEND", "noninteractive")
         .arg("--print-uris")
@@ -18,13 +19,13 @@ pub fn apt_uris(args: &[&str]) -> Result<Vec<AptUri>, AptUriError> {
         .run_with_stdout()
         .map_err(AptUriError::Command)?;
 
-    let mut packages = Vec::new();
+    let mut packages = HashSet::new();
     for line in output.lines() {
         if !line.starts_with('\'') {
             continue;
         }
 
-        packages.push(line.parse::<AptUri>()?);
+        packages.insert(line.parse::<AptUri>()?);
     }
 
     Ok(packages)
