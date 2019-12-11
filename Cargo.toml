@@ -1,38 +1,21 @@
 [package]
-name = "apt-fetcher"
+name = "apt-fetcher-preview"
 version = "0.1.0"
 authors = ["Michael Aaron Murphy <mmstickman@gmail.com>"]
 description = "Library for fetching dist and pool files from apt repos"
 license = "MIT"
 readme = "README"
+edition = "2018"
 
 [dependencies]
-apt-keyring = { git = "https://github.com/pop-os/apt-keyring" }
-apt-release-file = { git = "https://github.com/pop-os/apt-release-file" }
-# apt-sources-lists = { path = "../apt-sources-lists" }
-apt-sources-lists = { git = "https://github.com/pop-os/apt-sources-lists" }
+anyhow = "1"
 async-fetcher = { git = "https://github.com/pop-os/async-fetcher" }
-deb-architectures = "0.1.0"
-failure = "0.1.5"
-failure_derive = "0.1.3"
-filetime = "0.2.4"
-flate2 = "1.0.5"
-futures = "0.1.25"
-gpgrv = "0.1.1"
-log = "0.4.6"
-lz4 = "1.23.0"
-md-5 = "0.8.0"
-reqwest = "0.9.5"
-sha-1 = "0.8.1"
-sha2 = "0.8.0"
-tempfile = "3.0.4"
-tempfile-fast = "0.2.3"
-tokio = "0.1.11"
-xz2 = "0.1.6"
-tokio-threadpool = "0.1.9"
-err-derive = "0.1.5"
-
-[dev-dependencies]
-reqwest = "0.9.4"
-clap = "2.32.0"
-log = "0.4.6"
+async-std = "1"
+clap = "2"
+futures = "0.3"
+log = "0.4"
+os_pipe = "0.9"
+pidfd = "0.2"
+thiserror = "1"
+http-client = { git = "https://github.com/mmstick/http-client" }
+surf = { git = "https://github.com/mmstick/surf" }
