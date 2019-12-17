@@ -11,7 +11,7 @@ apt-keyring = { git = "https://github.com/pop-os/apt-keyring" }
 apt-release-file = { git = "https://github.com/pop-os/apt-release-file" }
 # apt-sources-lists = { path = "../apt-sources-lists" }
 apt-sources-lists = { git = "https://github.com/pop-os/apt-sources-lists" }
-async-fetcher = { git = "https://github.com/pop-os/async-fetcher" }
+async-fetcher = { git = "https://github.com/pop-os/async-fetcher", rev = "6b6073848ad10400efd512187e60c478d74437e8" }
 deb-architectures = "0.1.0"
 failure = "0.1.5"
 failure_derive = "0.1.3"
