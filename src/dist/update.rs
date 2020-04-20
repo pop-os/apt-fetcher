@@ -5,7 +5,7 @@ use deb_architectures::{Architecture, supported_architectures};
 use failure;
 use flate2::write::GzDecoder;
 use futures::{self, stream::futures_unordered, IntoFuture, Future, Stream};
-use gpgrv::verify_clearsign_armour;
+use gpgrv::verify_message;
 use keyring::AptKeyring;
 use md5::Md5;
 use reqwest::{self, async::Client};
@@ -260,7 +260,7 @@ impl<T: Future<Item = ReleaseData, Error = DistUpdateError> + Send> ReleaseFetch
                         unimplemented!()
                     } else {
                         trace!("verifying GPG signature of {}", release_data.path.display());
-                        verify_clearsign_armour(&mut BufReader::new(release_file), &mut output, &keyring.expect("keyring required"))
+                        verify_message(&mut BufReader::new(release_file), &mut output, &keyring.expect("keyring required"))
                             .map_err(|why| DistUpdateError::GpgValidation { why })?;
                     }
 
